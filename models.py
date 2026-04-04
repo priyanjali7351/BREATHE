@@ -37,23 +37,28 @@ def regression_report(y_true, y_pred, label: str = "") -> dict:
 # ─── Model 1: AQI Forecaster ──────────────────────────────────────────────────
 
 AQI_FORECAST_FEATURES = [
-    # Current pollutant readings
-    "PM2.5", "PM10", "NO2", "SO2", "CO", "O3", "NH3",
-    # Calendar / seasonality
-    "month", "dayofweek", "dayofyear", "quarter",
-    # AQI lag values (memory of recent air quality)
+    # Raw pollutant concentrations (NH3 removed — 100% null in INDIA_AQI_COMPLETE)
+    "PM2.5", "PM10", "NO2", "SO2", "CO", "O3",
+    # Weather features — affect pollutant formation and dispersion
+    "Temp_2m_C", "Humidity_Percent", "Wind_Speed_kmh", "Precipitation_mm", "Wind_Stagnation",
+    # Event flags — known pollution spike causes
+    "Temp_Inversion", "Festival_Period", "Crop_Burning_Season",
+    # Calendar + city identity
+    "month", "dayofweek", "city_enc",
+    # Season one-hot (quarter/dayofyear removed — redundant with month + season)
+    "season_Winter", "season_Monsoon", "season_Post_Monsoon", "season_Summer",
+    # AQI temporal memory
     "AQI_lag1", "AQI_lag3", "AQI_lag7",
-    # AQI rolling statistics (smoothed baseline + volatility)
-    "AQI_roll3_mean", "AQI_roll7_mean",
-    "AQI_roll3_std",  "AQI_roll7_std",
-    # AQI velocity (first-order) and acceleration (second-order)
-    "AQI_delta1", "AQI_delta3", "AQI_delta_trend",
-    # India-normalised AQI (non-linear scale encodes CPCB bands)
+    # AQI rolling stats (roll3 removed — redundant with lag1)
+    "AQI_roll7_mean", "AQI_roll7_std",
+    # AQI velocity (acceleration/delta_trend removed — noisy, low signal)
+    "AQI_delta1", "AQI_delta3",
+    # India CPCB normalised AQI
     "AQI_norm_india",
-    # Primary pollutant lags (PM2.5 and O3 drive most AQI variability)
-    "PM2.5_lag1", "PM2.5_lag3", "PM2.5_roll7_mean",
-    "NO2_lag1",   "NO2_lag3",
-    "O3_lag1",    "O3_lag3",
+    # Key pollutant lags (per-pollutant lag3/lag7/roll removed — collinear with AQI lags)
+    "PM2.5_lag1", "PM10_lag1", "NO2_lag1",
+    # Health impact reference (learned from health_impact dataset)
+    "ref_health_score", "ref_resp_cases",
 ]
 
 
@@ -78,9 +83,9 @@ def train_aqi_forecaster(df: pd.DataFrame, horizon: int = 1) -> dict:
     X = df_t[feat_cols].values
     y = df_t[target_col].values
 
-    # Temporal split: last 15% is the test period (no shuffle preserves time order)
+    # Temporal split: last 20% is the test period (consistent with preprocess pipeline)
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.15, shuffle=False
+        X, y, test_size=0.20, shuffle=False
     )
 
     model = XGBRegressor(
@@ -126,13 +131,25 @@ def train_aqi_forecaster(df: pd.DataFrame, horizon: int = 1) -> dict:
 # ─── Model 2: PHRS Predictor ──────────────────────────────────────────────────
 
 PHRS_FEATURES = [
-    "AQI",
-    "PM2.5", "PM10", "NO2", "SO2", "CO", "O3", "NH3",
+    # Air quality
+    "AQI", "AQI_norm_india",
+    # Pollutants (NH3 removed)
+    "PM2.5", "PM10", "NO2", "SO2", "CO", "O3",
+    # Health profile
     "age", "condition_enc", "activity_enc", "hours_outdoors",
-    "month", "dayofweek",
+    # Calendar + city
+    "month", "dayofweek", "city_enc",
+    # Season one-hot
+    "season_Winter", "season_Monsoon", "season_Post_Monsoon", "season_Summer",
+    # Weather context — affects personal exposure and pollutant toxicity
+    "Temp_2m_C", "Humidity_Percent", "Wind_Speed_kmh", "Wind_Stagnation",
+    # Event flags
+    "Temp_Inversion", "Festival_Period",
+    # AQI temporal signals (delta_trend removed — noisy)
     "AQI_lag1", "AQI_lag3", "AQI_roll7_mean",
-    "AQI_delta1", "AQI_delta3", "AQI_delta_trend",
-    "AQI_norm_india",
+    "AQI_delta1", "AQI_delta3",
+    # Health reference
+    "ref_health_score", "ref_resp_cases",
 ]
 
 
@@ -146,7 +163,7 @@ def train_phrs_model(phrs_df: pd.DataFrame) -> dict:
     y = phrs_df["PHRS"].values
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.15, random_state=42, shuffle=True
+        X, y, test_size=0.20, random_state=42, shuffle=True
     )
 
     model = XGBRegressor(

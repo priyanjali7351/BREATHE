@@ -2,42 +2,42 @@
   "aqi_h1": {
     "label": "AQI Forecaster +1d",
     "horizon_days": 1,
-    "mae": 18.07,
-    "rmse": 28.895,
-    "r2": 0.8999,
-    "train_r2": 0.7716,
-    "train_mae": 27.479,
-    "train_rmse": 70.236
+    "mae": 13.551,
+    "rmse": 34.873,
+    "r2": 0.8178,
+    "train_r2": 0.7988,
+    "train_mae": 20.992,
+    "train_rmse": 57.436
   },
   "aqi_h3": {
     "label": "AQI Forecaster +3d",
     "horizon_days": 3,
-    "mae": 28.963,
-    "rmse": 43.832,
-    "r2": 0.7685,
-    "train_r2": 0.6996,
-    "train_mae": 40.298,
-    "train_rmse": 80.564
+    "mae": 26.366,
+    "rmse": 49.857,
+    "r2": 0.6279,
+    "train_r2": 0.7136,
+    "train_mae": 35.283,
+    "train_rmse": 68.513
   },
   "aqi_h7": {
     "label": "AQI Forecaster +7d",
     "horizon_days": 7,
-    "mae": 31.953,
-    "rmse": 48.047,
-    "r2": 0.7183,
-    "train_r2": 0.7054,
-    "train_mae": 40.52,
-    "train_rmse": 79.781
+    "mae": 28.381,
+    "rmse": 52.969,
+    "r2": 0.5801,
+    "train_r2": 0.7155,
+    "train_mae": 35.367,
+    "train_rmse": 68.275
   },
   "phrs": {
     "label": "PHRS Predictor",
-    "mae": 0.37,
-    "rmse": 0.571,
-    "r2": 0.9991,
-    "train_r2": 0.9996,
-    "train_mae": 0.28,
-    "train_rmse": 0.384,
-    "cv_r2": 0.9975,
-    "cv_r2_std": 0.0022
+    "mae": 0.408,
+    "rmse": 0.607,
+    "r2": 0.9989,
+    "train_r2": 0.9994,
+    "train_mae": 0.32,
+    "train_rmse": 0.441,
+    "cv_r2": 0.998,
+    "cv_r2_std": 0.0003
   }
 }

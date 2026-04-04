@@ -108,13 +108,21 @@ def _pollutant_component(pollutants: dict[str, float], condition: str) -> float:
     return float(np.clip(weighted_avg_exceedance * 50.0, 0.0, 100.0))
 
 
-def _profile_component(profile: HealthProfile) -> float:
+def _profile_component(
+    profile: HealthProfile,
+    temp_c: float | None = None,
+    humidity: float | None = None,
+) -> float:
     """
     Personal vulnerability sub-score (0–100), independent of condition.
     Three sub-contributors, each mapped to a 0–33.3 range:
       - Activity multiplier: how intensely are they breathing?
       - Exposure factor:     how many hours per day are they outside?
       - Age factor:          are they in a vulnerable age group?
+
+    Optional weather modifiers:
+      - Extreme heat (temp > 35°C) raises exposure slightly (higher O3 + exertion risk)
+      - Cold + humid (temp < 10°C, humidity > 70%) raises exposure slightly (fog/PM trapping)
     """
     act_mult = ACTIVITY_MULTIPLIERS.get(profile.activity_level, 1.0)
     # Map [1.0, 1.5] → [0, 33.3]
@@ -122,7 +130,12 @@ def _profile_component(profile: HealthProfile) -> float:
 
     # exposure factor: 1 + 0.06 * hours, capped at 10h
     exposure_factor = 1.0 + 0.06 * min(profile.hours_outdoors, 10.0)
-    # Map [1.0, 1.6] → [0, 33.3]
+    # Weather modifiers on exposure (capped at +0.1 total to avoid dominating)
+    if temp_c is not None and temp_c > 35.0:
+        exposure_factor = min(exposure_factor + 0.06, 1.7)   # heat stress
+    if temp_c is not None and humidity is not None and temp_c < 10.0 and humidity > 70.0:
+        exposure_factor = min(exposure_factor + 0.05, 1.7)   # fog/inversion trapping
+    # Map [1.0, 1.6] → [0, 33.3]  (slight overflow beyond 1.6 still clipped at 100 below)
     exposure_contrib = (exposure_factor - 1.0) / 0.6 * 33.3
 
     # Age: children <12 and elderly >65 are more vulnerable
@@ -160,6 +173,8 @@ def compute_phrs(
     pollutants: dict[str, float],
     profile: HealthProfile,
     predicted_aqi: float | None = None,
+    temp_c: float | None = None,
+    humidity: float | None = None,
 ) -> float:
     """
     Compute Personal Health Risk Score (0–100) using an additive weighted sum.
@@ -189,7 +204,7 @@ def compute_phrs(
     """
     aqi_comp  = _aqi_component(aqi)
     poll_comp = _pollutant_component(pollutants, profile.condition)
-    prof_comp = _profile_component(profile)
+    prof_comp = _profile_component(profile, temp_c=temp_c, humidity=humidity)
     trend_val = _trend_component(aqi, predicted_aqi)
 
     # Rising trend adds to risk; falling trend gives partial relief
@@ -256,22 +271,41 @@ def generate_phrs_dataset(
     """
     For each AQI record, generate n synthetic health profiles and compute PHRS.
     Returns a flat DataFrame ready for ML training.
+    Now includes weather, season, event flags, and health reference features.
     """
     rng = np.random.default_rng(seed)
-    pollutants_present = [p for p in POLLUTANT_THRESHOLDS
-                          if p in aqi_df.columns]
+    pollutants_present = [p for p in POLLUTANT_THRESHOLDS if p in aqi_df.columns]
+
+    # Extra context columns to carry through to the output
+    context_cols = [
+        "month", "dayofweek", "city_enc",
+        "AQI_lag1", "AQI_lag3", "AQI_roll7_mean",
+        "AQI_delta1", "AQI_delta3", "AQI_norm_india",
+        "Temp_2m_C", "Humidity_Percent", "Wind_Speed_kmh", "Wind_Stagnation",
+        "Temp_Inversion", "Festival_Period",
+        "season_Winter", "season_Monsoon", "season_Post_Monsoon", "season_Summer",
+        "ref_health_score", "ref_resp_cases",
+    ]
+
     records = []
     for _, row in aqi_df.iterrows():
         poll_vals = {p: float(row.get(p, 0) or 0) for p in pollutants_present}
 
-        # Use AQI_lag1 as the "predicted next-day AQI" proxy during training.
-        # AQI_roll7_mean gives a smoother trend signal.
+        # Use AQI_lag1 as the predicted next-day AQI proxy during training
         pred_aqi = float(row.get("AQI_lag1", row["AQI"]))
+
+        # Pull weather values for the PHRS formula modifiers
+        temp_c   = float(row["Temp_2m_C"])   if "Temp_2m_C"        in row.index else None
+        humidity = float(row["Humidity_Percent"]) if "Humidity_Percent" in row.index else None
 
         for _ in range(n_profiles_per_row):
             profile = _random_profile(rng)
-            phrs    = compute_phrs(row["AQI"], poll_vals, profile,
-                                   predicted_aqi=pred_aqi)
+            phrs    = compute_phrs(
+                row["AQI"], poll_vals, profile,
+                predicted_aqi=pred_aqi,
+                temp_c=temp_c,
+                humidity=humidity,
+            )
             rec = {
                 "AQI":           row["AQI"],
                 **poll_vals,
@@ -280,10 +314,8 @@ def generate_phrs_dataset(
                 "activity_enc":  list(ACTIVITY_MULTIPLIERS.keys()).index(profile.activity_level),
                 "PHRS":          phrs,
             }
-            # Include engineered features if present
-            for col in ["month", "dayofweek", "AQI_lag1", "AQI_lag3",
-                        "AQI_roll7_mean", "AQI_delta1", "AQI_delta3",
-                        "AQI_delta_trend", "AQI_norm_india"]:
+            # Carry through all context features if present in the row
+            for col in context_cols:
                 if col in row.index:
                     rec[col] = row[col]
             records.append(rec)
