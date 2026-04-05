@@ -19,6 +19,7 @@ import joblib
 
 from generate_profiles import (
     HealthProfile, compute_phrs, phrs_category,
+    aggregate_condition_weight,
     CONDITION_WEIGHTS, ACTIVITY_MULTIPLIERS,
 )
 from models import MAX_DAILY_CHANGE
@@ -508,12 +509,12 @@ def _show_dashboard():
     )
 
     if sb_conditions and len(sb_conditions) > 1:
-        labels = " · ".join(sb_conditions)
-        cw_max = CONDITION_WEIGHTS.get(primary_condition, 1.0)
+        labels     = " · ".join(sb_conditions)
+        eff_weight = aggregate_condition_weight(sb_conditions)
         st.info(
             f"**Active conditions:** {labels}  \n"
-            f"Risk is computed using your highest-risk condition: "
-            f"**{primary_condition}** (weight {cw_max}×)"
+            f"Effective condition weight: **{eff_weight:.2f}×** "
+            f"(all co-morbidities included via additive penalty)"
         )
 
     if not MODELS_READY:
@@ -522,15 +523,32 @@ def _show_dashboard():
     # ── Fetch city data ────────────────────────────────────────────────────────
     latest_row = get_latest_row(sb_city) if sb_city else None
 
+    _POLL_COLS = ["PM2.5", "PM10", "NO2", "SO2", "CO", "O3"]
+
     if manual_aqi > 0:
         current_aqi = float(manual_aqi)
-        pollutants  = {}
-        pred_aqi    = None
+        if latest_row is not None:
+            # Scale real pollutant values proportionally to the overridden AQI
+            real_aqi = max(float(latest_row.get("AQI", 1) or 1), 1.0)
+            scale    = current_aqi / real_aqi
+            pollutants = {
+                p: float(latest_row.get(p, 0) or 0) * scale
+                for p in _POLL_COLS
+                if p in latest_row.index
+            }
+            # Anchor the forecast on the overridden AQI so chart stays consistent
+            pred_aqi = (
+                predict_future_aqi_smooth(latest_row, current_aqi, 1)
+                if MODELS_READY else None
+            )
+        else:
+            pollutants = {}
+            pred_aqi   = None
     elif latest_row is not None:
         current_aqi = float(latest_row["AQI"])
         pollutants  = {
             p: float(latest_row.get(p, 0) or 0)
-            for p in ["PM2.5", "PM10", "NO2", "SO2", "CO", "O3"]
+            for p in _POLL_COLS
             if p in latest_row.index
         }
         pred_aqi = (
@@ -544,7 +562,8 @@ def _show_dashboard():
 
     # ── PHRS computation ───────────────────────────────────────────────────────
     phrs_score             = compute_phrs(current_aqi, pollutants, profile,
-                                          predicted_aqi=pred_aqi)
+                                          predicted_aqi=pred_aqi,
+                                          conditions=sb_conditions)
     risk_label, risk_color = phrs_category(phrs_score)
 
     # ── KPI cards ──────────────────────────────────────────────────────────────
@@ -573,10 +592,10 @@ def _show_dashboard():
             st.caption("Train models to see forecast")
 
     with c4:
-        cw = CONDITION_WEIGHTS.get(primary_condition, 1.0)
-        am = ACTIVITY_MULTIPLIERS.get(sb_activity, 1.0)
-        st.metric("Sensitivity Multiplier", f"{cw * am:.2f}×")
-        st.caption(f"Condition {cw}× · Activity {am}×")
+        eff_cw = aggregate_condition_weight(sb_conditions)
+        am     = ACTIVITY_MULTIPLIERS.get(sb_activity, 1.0)
+        st.metric("Sensitivity Multiplier", f"{eff_cw * am:.2f}×")
+        st.caption(f"Condition {eff_cw:.2f}× · Activity {am}×")
 
     st.markdown("---")
 
@@ -788,7 +807,7 @@ def _show_dashboard():
 
         styled = (
             metrics_df.style
-            .applymap(_color_r2, subset=["Test R²", "Train R²"])
+            .map(_color_r2, subset=["Test R²", "Train R²"])
             .format({
                 "Test R²":   "{:.4f}",
                 "Test MAE":  "{:.2f}",

@@ -59,10 +59,28 @@ POLLUTANT_THRESHOLDS = {
 }
 
 # PHRS component weights — must sum to 1.0
-W_AQI      = 0.35   # Raw air quality level
-W_POLLUTANT = 0.30  # Pollutant composition & exceedances
-W_PROFILE  = 0.25   # Personal vulnerability (activity, exposure, age)
-W_TREND    = 0.10   # Future AQI trend penalty
+W_AQI      = 0.50   # Raw air quality level
+W_POLLUTANT = 0.25  # Pollutant composition & exceedances
+W_PROFILE  = 0.20   # Personal vulnerability (exposure, age)
+W_TREND    = 0.05   # Future AQI trend penalty
+
+
+def aggregate_condition_weight(conditions: list[str]) -> float:
+    """
+    Compute an effective condition weight for multiple co-morbidities.
+    Uses an additive penalty: dominant weight + 0.4 × each extra condition's
+    excess above 1.0, capped at 2.0.
+
+    Example: Diabetes(1.25) + Mild Asthma(1.40)
+      → 1.40 + 0.4*(1.25-1.0) = 1.50
+    """
+    if not conditions:
+        return CONDITION_WEIGHTS["Healthy"]
+    weights = sorted(
+        [CONDITION_WEIGHTS.get(c, 1.0) for c in conditions], reverse=True
+    )
+    effective = weights[0] + 0.4 * sum(w - 1.0 for w in weights[1:])
+    return float(min(effective, 2.0))
 
 
 @dataclass
@@ -81,25 +99,30 @@ def _aqi_component(aqi: float) -> float:
     return normalize_aqi_india(aqi) * 100.0
 
 
-def _pollutant_component(pollutants: dict[str, float], condition: str) -> float:
+def _pollutant_component(pollutants: dict[str, float], conditions: list[str]) -> float:
     """
     Pollutant sub-score (0–100).
 
     For each pollutant, compute exceedance ratio = value / safe_threshold,
     clipped at 2× (so 2× threshold = fully exceeded).
-    Weight by condition-specific sensitivity, then average.
+    For multiple conditions, use the worst-case (max) sensitivity per pollutant
+    so that co-morbidities are fully represented.
     Scale so that an average exceedance of 1.0 (at threshold) → 50 points,
     and 2.0 (double threshold) → 100 points.
     """
-    sens = POLLUTANT_SENSITIVITY.get(condition, POLLUTANT_SENSITIVITY["Healthy"])
     poll_risk = 0.0
     total_weight = 0.0
     for poll, raw_val in pollutants.items():
-        if poll in sens and poll in POLLUTANT_THRESHOLDS:
-            w        = sens[poll]
-            exc      = np.clip(raw_val / POLLUTANT_THRESHOLDS[poll], 0.0, 2.0)
-            poll_risk    += w * exc
-            total_weight += w
+        if poll not in POLLUTANT_THRESHOLDS:
+            continue
+        # Worst-case sensitivity across all selected conditions
+        max_sens = max(
+            POLLUTANT_SENSITIVITY.get(c, POLLUTANT_SENSITIVITY["Healthy"]).get(poll, 1.0)
+            for c in conditions
+        )
+        exc           = np.clip(raw_val / POLLUTANT_THRESHOLDS[poll], 0.0, 2.0)
+        poll_risk    += max_sens * exc
+        total_weight += max_sens
 
     if total_weight == 0:
         return 0.0
@@ -114,20 +137,19 @@ def _profile_component(
     humidity: float | None = None,
 ) -> float:
     """
-    Personal vulnerability sub-score (0–100), independent of condition.
-    Three sub-contributors, each mapped to a 0–33.3 range:
-      - Activity multiplier: how intensely are they breathing?
-      - Exposure factor:     how many hours per day are they outside?
-      - Age factor:          are they in a vulnerable age group?
+    Personal vulnerability sub-score (0–100), covering exposure and age.
+    Two sub-contributors, each mapped to a 0–50 range:
+      - Exposure factor: how many hours per day are they outside?
+      - Age factor:      are they in a vulnerable age group?
+
+    Activity is intentionally excluded here — it is applied as a direct
+    multiplier to the ambient AQI and pollutant components in compute_phrs,
+    giving it 3–4× more leverage on the final score.
 
     Optional weather modifiers:
       - Extreme heat (temp > 35°C) raises exposure slightly (higher O3 + exertion risk)
       - Cold + humid (temp < 10°C, humidity > 70%) raises exposure slightly (fog/PM trapping)
     """
-    act_mult = ACTIVITY_MULTIPLIERS.get(profile.activity_level, 1.0)
-    # Map [1.0, 1.5] → [0, 33.3]
-    activity_contrib = (act_mult - 1.0) / (_MAX_ACTIVITY_MULT - 1.0) * 33.3
-
     # exposure factor: 1 + 0.06 * hours, capped at 10h
     exposure_factor = 1.0 + 0.06 * min(profile.hours_outdoors, 10.0)
     # Weather modifiers on exposure (capped at +0.1 total to avoid dominating)
@@ -135,8 +157,8 @@ def _profile_component(
         exposure_factor = min(exposure_factor + 0.06, 1.7)   # heat stress
     if temp_c is not None and humidity is not None and temp_c < 10.0 and humidity > 70.0:
         exposure_factor = min(exposure_factor + 0.05, 1.7)   # fog/inversion trapping
-    # Map [1.0, 1.6] → [0, 33.3]  (slight overflow beyond 1.6 still clipped at 100 below)
-    exposure_contrib = (exposure_factor - 1.0) / 0.6 * 33.3
+    # Map [1.0, 1.6] → [0, 50]
+    exposure_contrib = (exposure_factor - 1.0) / 0.6 * 50.0
 
     # Age: children <12 and elderly >65 are more vulnerable
     if profile.age < 12:
@@ -145,10 +167,10 @@ def _profile_component(
         age_factor = 1.20
     else:
         age_factor = 1.0
-    # Map [1.0, 1.25] → [0, 33.3]
-    age_contrib = (age_factor - 1.0) / 0.25 * 33.3
+    # Map [1.0, 1.25] → [0, 50]
+    age_contrib = (age_factor - 1.0) / 0.25 * 50.0
 
-    return float(np.clip(activity_contrib + exposure_contrib + age_contrib, 0.0, 100.0))
+    return float(np.clip(exposure_contrib + age_contrib, 0.0, 100.0))
 
 
 def _trend_component(aqi: float, predicted_aqi: float | None) -> float:
@@ -175,23 +197,24 @@ def compute_phrs(
     predicted_aqi: float | None = None,
     temp_c: float | None = None,
     humidity: float | None = None,
+    conditions: list[str] | None = None,
 ) -> float:
     """
     Compute Personal Health Risk Score (0–100) using an additive weighted sum.
 
     Formula
     -------
-    base_PHRS = W_AQI      * aqi_component(aqi)
-              + W_POLLUTANT * pollutant_component(pollutants, condition)
-              + W_PROFILE   * profile_component(profile)
+    base_PHRS = W_AQI      * aqi_component(aqi)      * activity_mult
+              + W_POLLUTANT * pollutant_component(...)  * activity_mult
+              + W_PROFILE   * profile_component(profile)  (exposure + age only)
               + W_TREND     * max(0, trend_component(aqi, predicted_aqi))
 
-    The rising-trend bonus is included in base_PHRS.
-    A falling-trend gives a small relief reduction applied after.
+    Activity is applied directly to the ambient exposure components so that
+    an Athlete vs Sedentary user sees a 3–4× larger score delta than before.
 
-    The condition weight (1.0–1.80) scales the final score so that a Severe
-    Asthmatic or Heart Disease patient at the same AQI as a Healthy person
-    receives a meaningfully higher PHRS.
+    The condition weight (1.0–2.0) scales the final score. For multiple
+    conditions, aggregate_condition_weight() adds a cumulative penalty for
+    each co-morbidity rather than silently dropping them.
 
     PHRS = clip(base_PHRS * condition_weight, 0, 100)
 
@@ -199,21 +222,29 @@ def compute_phrs(
     ----------
     aqi           : current raw AQI (India CPCB scale)
     pollutants    : dict of pollutant concentrations (µg/m³)
-    profile       : user health profile
+    profile       : user health profile (single condition; used as fallback)
     predicted_aqi : optional forecasted AQI for trend penalty
+    conditions    : full list of user conditions (overrides profile.condition
+                    for weight & sensitivity calculation)
     """
-    aqi_comp  = _aqi_component(aqi)
-    poll_comp = _pollutant_component(pollutants, profile.condition)
-    prof_comp = _profile_component(profile, temp_c=temp_c, humidity=humidity)
-    trend_val = _trend_component(aqi, predicted_aqi)
+    cond_list = conditions if conditions else [profile.condition]
+
+    aqi_comp   = _aqi_component(aqi)
+    poll_comp  = _pollutant_component(pollutants, cond_list)
+    prof_comp  = _profile_component(profile, temp_c=temp_c, humidity=humidity)
+    trend_val  = _trend_component(aqi, predicted_aqi)
+
+    # Activity multiplier applied directly to ambient exposure (AQI + pollutant)
+    # so that changing activity level has a proportional effect on 75% of the score
+    activity_mult = ACTIVITY_MULTIPLIERS.get(profile.activity_level, 1.0)
 
     # Rising trend adds to risk; falling trend gives partial relief
-    trend_bonus    = max(0.0, trend_val)
-    trend_relief   = min(0.0, trend_val)  # negative or zero
+    trend_bonus  = max(0.0, trend_val)
+    trend_relief = min(0.0, trend_val)  # negative or zero
 
     base_phrs = (
-        W_AQI       * aqi_comp
-        + W_POLLUTANT * poll_comp
+        W_AQI       * aqi_comp  * activity_mult
+        + W_POLLUTANT * poll_comp * activity_mult
         + W_PROFILE   * prof_comp
         + W_TREND     * trend_bonus
     )
@@ -221,8 +252,8 @@ def compute_phrs(
     # Apply falling-trend relief (capped at −20 points, scaled by W_TREND)
     base_phrs += W_TREND * trend_relief
 
-    # Condition weight scales the full score (1.0–1.80)
-    cond_weight = CONDITION_WEIGHTS.get(profile.condition, 1.0)
+    # Aggregate condition weight accounts for co-morbidities (1.0–2.0)
+    cond_weight = aggregate_condition_weight(cond_list)
     phrs = np.clip(base_phrs * cond_weight, 0.0, 100.0)
 
     return round(float(phrs), 2)
@@ -305,6 +336,7 @@ def generate_phrs_dataset(
                 predicted_aqi=pred_aqi,
                 temp_c=temp_c,
                 humidity=humidity,
+                conditions=[profile.condition],
             )
             rec = {
                 "AQI":           row["AQI"],

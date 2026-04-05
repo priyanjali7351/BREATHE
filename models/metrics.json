@@ -31,13 +31,13 @@
   },
   "phrs": {
     "label": "PHRS Predictor",
-    "mae": 0.408,
-    "rmse": 0.607,
-    "r2": 0.9989,
-    "train_r2": 0.9994,
-    "train_mae": 0.32,
-    "train_rmse": 0.441,
-    "cv_r2": 0.998,
-    "cv_r2_std": 0.0003
+    "mae": 0.512,
+    "rmse": 0.829,
+    "r2": 0.9987,
+    "train_r2": 0.9993,
+    "train_mae": 0.407,
+    "train_rmse": 0.622,
+    "cv_r2": 0.9978,
+    "cv_r2_std": 0.0004
   }
 }
