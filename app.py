@@ -23,6 +23,7 @@ from generate_profiles import (
     CONDITION_WEIGHTS, ACTIVITY_MULTIPLIERS,
 )
 from models import MAX_DAILY_CHANGE
+from preprocess import normalize_aqi_india
 
 # ─── Page config ──────────────────────────────────────────────────────────────
 
@@ -86,10 +87,12 @@ def _update_profile(username: str, profile: dict):
 
 def _init_session():
     defaults = {
-        "logged_in":  False,
-        "username":   "",
-        "profile":    {},
-        "auth_tab":   "Login",   # "Login" | "Sign Up"
+        "logged_in":    False,
+        "username":     "",
+        "profile":      {},
+        "auth_tab":     "Login",   # "Login" | "Sign Up"
+        "manual_mode":  False,     # Auto=False | Manual=True
+        "horizon_view": 0,         # 0=Today, 1=+1d, 3=+3d, 7=+7d
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -105,6 +108,20 @@ def _primary_condition(conditions: list[str]) -> str:
     if not conditions:
         return "Healthy"
     return max(conditions, key=lambda c: CONDITION_WEIGHTS.get(c, 1.0))
+
+
+# ─── Season helper ────────────────────────────────────────────────────────────
+
+_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+def _month_to_season(month: int) -> str:
+    if month in (6, 7, 8, 9):   return "Monsoon"
+    if month in (10, 11):        return "Post_Monsoon"
+    if month in (12, 1, 2):      return "Winter"
+    return "Summer"
 
 
 # ─── App helpers ──────────────────────────────────────────────────────────────
@@ -468,14 +485,6 @@ def _show_dashboard():
         if not sb_conditions:
             sb_conditions = ["Healthy"]
 
-        st.markdown("---")
-        st.markdown("**Manual AQI Override**")
-        manual_aqi = st.number_input(
-            "Current AQI (0 = use city data)",
-            min_value=0, max_value=1000, value=0,
-            key="sb_manual_aqi",
-        )
-
         if st.button("Save Profile", use_container_width=True, type="primary"):
             updated = {
                 "age":            sb_age,
@@ -505,7 +514,7 @@ def _show_dashboard():
     st.title("🌬️ BioAQI — Personal Health Risk Score")
     st.markdown(
         "Standard AQI treats everyone equally. **BioAQI** computes *your* personal risk "
-        "based on your health profile, activity, and predicted air quality trends."
+        "based on your health profile, activity, weather conditions, and predicted air quality trends."
     )
 
     if sb_conditions and len(sb_conditions) > 1:
@@ -520,61 +529,177 @@ def _show_dashboard():
     if not MODELS_READY:
         st.warning("⚠️ Models not found. Run `python train.py` first to train all models.")
 
-    # ── Fetch city data ────────────────────────────────────────────────────────
-    latest_row = get_latest_row(sb_city) if sb_city else None
+    # ══════════════════════════════════════════════════════════════════════════
+    # MODE TOGGLE — Auto vs Manual
+    # ══════════════════════════════════════════════════════════════════════════
 
+    mode_col, _ = st.columns([1, 3])
+    with mode_col:
+        manual_mode = st.toggle(
+            "Manual Input Mode",
+            value=st.session_state.manual_mode,
+            key="mode_toggle",
+            help="Auto: loads latest recorded city data.  Manual: enter your own scenario values.",
+        )
+        if manual_mode != st.session_state.manual_mode:
+            st.session_state.manual_mode  = manual_mode
+            st.session_state.horizon_view = 0   # reset horizon on mode switch
+            st.rerun()
+
+    if manual_mode:
+        st.caption("Manual mode — enter your own AQI and weather to explore any scenario.")
+    else:
+        st.caption("Auto mode — using the latest recorded data for your selected city.")
+
+    # ── Manual mode input panel ────────────────────────────────────────────────
+    if manual_mode:
+        with st.expander("Manual Input Values", expanded=True):
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            with mc1:
+                manual_aqi   = st.slider("Current AQI", 0, 500, 150, key="m_aqi")
+            with mc2:
+                manual_temp  = st.slider("Temperature (°C)", -5, 50, 25, key="m_temp")
+            with mc3:
+                manual_humid = st.slider("Humidity (%)", 0, 100, 50, key="m_humid")
+            with mc4:
+                manual_month_name = st.selectbox(
+                    "Month", _MONTH_NAMES, index=0, key="m_month"
+                )
+                manual_month = _MONTH_NAMES.index(manual_month_name) + 1
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # HORIZON SELECTOR — Today / +1 Day / +3 Days / +7 Days
+    # ══════════════════════════════════════════════════════════════════════════
+
+    st.markdown("**View Forecast Horizon:**")
+    h_cols = st.columns(4)
+    _HORIZONS = [(0, "Today"), (1, "+1 Day"), (3, "+3 Days"), (7, "+7 Days")]
+    for col, (h, label) in zip(h_cols, _HORIZONS):
+        is_active = st.session_state.horizon_view == h
+        if col.button(
+            label,
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+            key=f"hbtn_{h}",
+        ):
+            st.session_state.horizon_view = h
+            st.rerun()
+
+    horizon = st.session_state.horizon_view
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # DATA LOADING — Auto or Manual
+    # ══════════════════════════════════════════════════════════════════════════
+
+    latest_row = get_latest_row(sb_city) if sb_city else None
     _POLL_COLS = ["PM2.5", "PM10", "NO2", "SO2", "CO", "O3"]
 
-    if manual_aqi > 0:
-        current_aqi = float(manual_aqi)
+    if manual_mode:
+        # Build a synthetic row from the last known city row (for lag context)
+        # then override with user-entered values
         if latest_row is not None:
-            # Scale real pollutant values proportionally to the overridden AQI
-            real_aqi = max(float(latest_row.get("AQI", 1) or 1), 1.0)
-            scale    = current_aqi / real_aqi
-            pollutants = {
-                p: float(latest_row.get(p, 0) or 0) * scale
-                for p in _POLL_COLS
-                if p in latest_row.index
-            }
-            # Anchor the forecast on the overridden AQI so chart stays consistent
-            pred_aqi = (
-                predict_future_aqi_smooth(latest_row, current_aqi, 1)
-                if MODELS_READY else None
-            )
+            row = latest_row.copy()
         else:
-            pollutants = {}
-            pred_aqi   = None
-    elif latest_row is not None:
-        current_aqi = float(latest_row["AQI"])
-        pollutants  = {
-            p: float(latest_row.get(p, 0) or 0)
-            for p in _POLL_COLS
-            if p in latest_row.index
-        }
-        pred_aqi = (
-            predict_future_aqi_smooth(latest_row, current_aqi, 1)
-            if MODELS_READY else None
-        )
-    else:
-        current_aqi = 0.0
-        pollutants  = {}
-        pred_aqi    = None
+            row = pd.Series(dtype=float)
 
-    # ── PHRS computation ───────────────────────────────────────────────────────
-    phrs_score             = compute_phrs(current_aqi, pollutants, profile,
-                                          predicted_aqi=pred_aqi,
-                                          conditions=sb_conditions)
+        current_aqi = float(manual_aqi)
+        temp_c      = float(manual_temp)
+        humidity    = float(manual_humid)
+        season      = _month_to_season(manual_month)
+
+        # Override the AQI-related fields with the manual values
+        row["AQI"]              = current_aqi
+        row["Temp_2m_C"]        = temp_c
+        row["Humidity_Percent"] = humidity
+        row["month"]            = manual_month
+        row["AQI_lag1"]         = current_aqi   # assume stable history
+        row["AQI_lag3"]         = current_aqi
+        row["AQI_lag7"]         = current_aqi
+        row["AQI_roll7_mean"]   = current_aqi
+        row["AQI_roll7_std"]    = 0.0
+        row["AQI_delta1"]       = 0.0
+        row["AQI_delta3"]       = 0.0
+        row["AQI_norm_india"]   = normalize_aqi_india(current_aqi)
+        for s in ["Winter", "Monsoon", "Post_Monsoon", "Summer"]:
+            row[f"season_{s}"] = int(season == s)
+
+        pollutants = {}   # no per-pollutant data in manual mode
+
+    else:
+        if latest_row is not None:
+            row         = latest_row
+            current_aqi = float(latest_row["AQI"])
+            pollutants  = {
+                p: float(latest_row.get(p, 0) or 0)
+                for p in _POLL_COLS if p in latest_row.index
+            }
+            temp_c   = float(latest_row.get("Temp_2m_C", 25.0) or 25.0)
+            humidity = float(latest_row.get("Humidity_Percent", 50.0) or 50.0)
+        else:
+            row         = pd.Series(dtype=float)
+            current_aqi = 0.0
+            pollutants  = {}
+            temp_c      = 25.0
+            humidity    = 50.0
+
+    # Pre-compute forecasts for all horizons (used by both chart and KPI cards)
+    _forecasts = {}   # horizon → predicted AQI (or None)
+    if MODELS_READY and not row.empty:
+        for h in [1, 3, 7]:
+            _forecasts[h] = predict_future_aqi_smooth(row, current_aqi, h)
+
+    # ── Select display_aqi based on chosen horizon ─────────────────────────────
+    if horizon == 0:
+        display_aqi  = current_aqi
+        horizon_label = "Current AQI"
+        is_forecast   = False
+    else:
+        display_aqi   = _forecasts.get(horizon, current_aqi) or current_aqi
+        horizon_label = f"Predicted AQI (+{horizon} day{'s' if horizon > 1 else ''})"
+        is_forecast   = True
+
+    # For the PHRS trend component: use the next-horizon prediction as "future"
+    _next_h = {1: 3, 3: 7, 7: 7}
+    trend_aqi = (
+        _forecasts.get(_next_h.get(horizon, 1))
+        if horizon > 0
+        else (_forecasts.get(1))
+    )
+
+    # ── PHRS computation (weather-aware, multi-condition) ─────────────────────
+    phrs_score             = compute_phrs(
+        display_aqi, pollutants, profile,
+        predicted_aqi=trend_aqi,
+        temp_c=temp_c,
+        humidity=humidity,
+        conditions=sb_conditions,
+    )
     risk_label, risk_color = phrs_category(phrs_score)
 
-    # ── KPI cards ──────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # KPI CARDS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if is_forecast:
+        st.markdown(
+            f"<div style='background:#1a1a2e;border-left:4px solid #f39c12;"
+            f"padding:8px 14px;border-radius:4px;margin-bottom:12px'>"
+            f"<b style='color:#f39c12'>Viewing forecast: +{horizon} day{'s' if horizon > 1 else ''}</b>"
+            f" — AQI and PHRS below reflect predicted conditions, not current readings."
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        st.metric("Current AQI", f"{current_aqi:.0f}")
-        st.caption(_aqi_bucket(current_aqi))
+        st.metric(horizon_label, f"{display_aqi:.0f}")
+        st.caption(_aqi_bucket(display_aqi))
 
     with c2:
-        st.metric("Your PHRS", f"{phrs_score:.1f} / 100")
+        phrs_card_label = f"PHRS (+{horizon}d)" if is_forecast else "Your PHRS"
+        st.metric(phrs_card_label, f"{phrs_score:.1f} / 100")
         st.markdown(
             f"<span style='color:{risk_color}; font-weight:bold; font-size:1.1em'>"
             f"{risk_label}</span>",
@@ -582,11 +707,18 @@ def _show_dashboard():
         )
 
     with c3:
-        if pred_aqi is not None:
-            delta_val = round(pred_aqi - current_aqi, 1)
+        next_h_for_card = _next_h.get(horizon, 1) if horizon > 0 else 1
+        next_aqi = _forecasts.get(next_h_for_card)
+        ref_aqi  = display_aqi if not is_forecast else current_aqi
+        if next_aqi is not None:
+            delta_val = round(next_aqi - ref_aqi, 1)
             delta_str = f"+{delta_val}" if delta_val > 0 else str(delta_val)
-            st.metric("Predicted AQI (+1 day)", f"{pred_aqi:.0f}",
-                      delta=delta_str, delta_color="inverse")
+            label_c3  = (
+                f"Predicted AQI (+{next_h_for_card}d)"
+                if not is_forecast
+                else f"Next Forecast (+{next_h_for_card}d)"
+            )
+            st.metric(label_c3, f"{next_aqi:.0f}", delta=delta_str, delta_color="inverse")
         else:
             st.metric("Predicted AQI (+1 day)", "—")
             st.caption("Train models to see forecast")
@@ -595,7 +727,7 @@ def _show_dashboard():
         eff_cw = aggregate_condition_weight(sb_conditions)
         am     = ACTIVITY_MULTIPLIERS.get(sb_activity, 1.0)
         st.metric("Sensitivity Multiplier", f"{eff_cw * am:.2f}×")
-        st.caption(f"Condition {eff_cw:.2f}× · Activity {am}×")
+        st.caption(f"Condition {eff_cw:.2f}× · Activity {am}×  \nTemp {temp_c:.0f}°C · Humidity {humidity:.0f}%")
 
     st.markdown("---")
 
@@ -630,44 +762,66 @@ def _show_dashboard():
 
     with col_forecast:
         st.subheader("AQI Forecast (Temporally Constrained)")
-        if latest_row is not None and MODELS_READY:
-            aqi_vals = [current_aqi]
-            for h in [1, 3, 7]:
-                v = predict_future_aqi_smooth(latest_row, current_aqi, h)
-                aqi_vals.append(v if v is not None else current_aqi)
-            labels = ["Now", "+1 day", "+3 days", "+7 days"]
+        if not row.empty and MODELS_READY and _forecasts:
+            fc_labels  = ["Now", "+1 day", "+3 days", "+7 days"]
+            fc_aqi     = [
+                current_aqi,
+                _forecasts.get(1, current_aqi),
+                _forecasts.get(3, current_aqi),
+                _forecasts.get(7, current_aqi),
+            ]
+            # Map selected horizon to its label for highlight
+            _h_label_map = {0: "Now", 1: "+1 day", 3: "+3 days", 7: "+7 days"}
+            selected_label = _h_label_map[horizon]
 
             fig_fc = go.Figure()
+            # Main forecast line
             fig_fc.add_trace(go.Scatter(
-                x=labels, y=aqi_vals,
+                x=fc_labels, y=fc_aqi,
                 mode="lines+markers",
-                marker=dict(size=10, color=[_risk_color_for_aqi(v) for v in aqi_vals]),
+                marker=dict(size=10, color=[_risk_color_for_aqi(v) for v in fc_aqi]),
                 line=dict(color="#3498db", width=2),
                 name="AQI",
             ))
-            for threshold, label, color in [
+            # Highlight the currently-viewed horizon with a large yellow ring
+            fig_fc.add_trace(go.Scatter(
+                x=[selected_label],
+                y=[fc_aqi[fc_labels.index(selected_label)]],
+                mode="markers",
+                marker=dict(size=22, color="rgba(0,0,0,0)",
+                            line=dict(color="#f1c40f", width=3)),
+                name="Viewing",
+                showlegend=True,
+            ))
+            for threshold, lbl, color in [
                 (50,  "Good",     "#2ecc71"),
                 (100, "Moderate", "#f39c12"),
                 (200, "Poor",     "#e67e22"),
             ]:
                 fig_fc.add_hline(y=threshold, line_dash="dot", line_color=color,
-                                 annotation_text=label, annotation_position="right")
+                                 annotation_text=lbl, annotation_position="right")
             fig_fc.update_layout(
                 height=280, xaxis_title="Horizon", yaxis_title="AQI",
                 margin=dict(l=20, r=70, t=30, b=20),
                 plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
                 font=dict(color="white"),
+                legend=dict(orientation="h", y=1.12),
             )
             st.plotly_chart(fig_fc, use_container_width=True)
         else:
-            st.info("Select a city and train models to see the AQI forecast.")
+            st.info("Select a city with available data and trained models to see the AQI forecast.")
 
     st.markdown("---")
 
     # ── Row 3: Pollutant breakdown ─────────────────────────────────────────────
     st.subheader("Pollutant Breakdown")
 
-    if pollutants:
+    if manual_mode:
+        st.info(
+            "Pollutant breakdown is not available in Manual mode — "
+            "only overall AQI was entered. Switch to Auto mode to see per-pollutant data."
+        )
+    elif pollutants:
         thresholds = {"PM2.5": 60, "PM10": 100, "NO2": 80, "SO2": 80, "CO": 2, "O3": 100}
         poll_df = pd.DataFrame([
             {
@@ -694,20 +848,21 @@ def _show_dashboard():
         st.plotly_chart(fig_poll, use_container_width=True)
         with st.expander("Pollutant Data Table"):
             st.dataframe(poll_df, use_container_width=True)
-    else:
-        st.info("No pollutant data available. Select a city or enter a manual AQI.")
+    elif not manual_mode:
+        st.info("No pollutant data available. Select a city from the sidebar.")
 
     st.markdown("---")
 
     # ── Row 4: Sensitivity comparison ─────────────────────────────────────────
     st.subheader("How Different Profiles Compare (Same AQI)")
 
-    if current_aqi > 0:
+    if display_aqi > 0:
         comparison_rows = []
         for cond in CONDITION_WEIGHTS:
             for act in ["Sedentary", "Active"]:
                 p = HealthProfile(age=30, condition=cond, activity_level=act, hours_outdoors=3)
-                s = compute_phrs(current_aqi, pollutants, p)
+                s = compute_phrs(display_aqi, pollutants, p,
+                                 temp_c=temp_c, humidity=humidity)
                 comparison_rows.append({"Condition": cond, "Activity": act, "PHRS": s})
         comp_df = pd.DataFrame(comparison_rows)
         # Highlight user's conditions
@@ -764,7 +919,9 @@ def _show_dashboard():
 
     # ── Row 6: Recommendations ────────────────────────────────────────────────
     st.subheader("Personalized Recommendations")
-    recs = get_recommendations(phrs_score, profile, sb_conditions, current_aqi, pred_aqi)
+    recs = get_recommendations(phrs_score, profile, sb_conditions, display_aqi, trend_aqi)
+    if is_forecast:
+        st.caption(f"Recommendations based on predicted conditions at +{horizon} day{'s' if horizon > 1 else ''}.")
     for rec in recs:
         st.markdown(f"- {rec}")
 
