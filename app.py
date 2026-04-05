@@ -24,6 +24,7 @@ from generate_profiles import (
 )
 from models import MAX_DAILY_CHANGE
 from preprocess import normalize_aqi_india
+import sensor as _sensor
 
 # ─── Page config ──────────────────────────────────────────────────────────────
 
@@ -93,6 +94,9 @@ def _init_session():
         "auth_tab":     "Login",   # "Login" | "Sign Up"
         "manual_mode":  False,     # Auto=False | Manual=True
         "horizon_view": 0,         # 0=Today, 1=+1d, 3=+3d, 7=+7d
+        "sensor_aqi":   150.0,
+        "manual_live_aqi": 150.0,
+        "manual_aqi_follow_sensor": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -418,6 +422,57 @@ def _show_auth_page():
                         )
 
 
+# ── MQ135 live panel — auto-refreshes every 2 s when sensor is active ─────────
+
+@st.fragment(run_every=2)
+def _sensor_live_panel():
+    """Fragment that polls the background sensor thread every 2 seconds."""
+    if not st.session_state.get("sensor_active"):
+        return
+    r = _sensor.get_reading()
+    if r["error"]:
+        st.warning(f"Sensor error: {r['error']}")
+        return
+    if r["ppm"] is None:
+        st.info("Waiting for sensor data... (allow 2–5 min warm-up)")
+        return
+
+    aqi   = r["aqi"]
+    ppm   = r["ppm"]
+    raw   = r["raw"]
+
+    # Map AQI to a label for context
+    if aqi <= 50:
+        cat = "Good"
+    elif aqi <= 100:
+        cat = "Satisfactory"
+    elif aqi <= 200:
+        cat = "Moderate"
+    elif aqi <= 300:
+        cat = "Poor"
+    elif aqi <= 400:
+        cat = "Very Poor"
+    else:
+        cat = "Severe"
+
+    raw_info = f" · RAW ADC: {raw}" if raw is not None else ""
+    st.info(
+        f"**MQ135 Live →**  {ppm} PPM  |  AQI ~**{aqi}** ({cat}){raw_info}  "
+        f"*(slider pre-filled; drag to override)*"
+    )
+    # Keep raw sensor telemetry separate from the manual AQI input state.
+    prev_sensor_aqi = st.session_state.get("sensor_aqi")
+    st.session_state["sensor_aqi"] = aqi
+    if (
+        st.session_state.get("manual_mode")
+        and st.session_state.get("manual_aqi_follow_sensor")
+        and st.session_state.get("manual_live_aqi") != aqi
+        and prev_sensor_aqi != aqi
+    ):
+        st.session_state["manual_live_aqi"] = float(aqi)
+        st.rerun()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
@@ -498,6 +553,33 @@ def _show_dashboard():
             st.success("Profile saved!")
 
         st.markdown("---")
+        st.markdown("### MQ135 Sensor")
+        _available_ports = _sensor.list_ports()
+        if _available_ports:
+            _sel_port = st.selectbox("COM Port", _available_ports, key="sensor_port")
+            _already_active = st.session_state.get("sensor_active")
+            if not _already_active:
+                if st.button("Connect Sensor", use_container_width=True):
+                    _sensor.start(_sel_port)
+                    st.session_state["sensor_active"] = True
+                    st.session_state["manual_aqi_follow_sensor"] = True
+                    st.rerun()
+            else:
+                if st.button("Disconnect", use_container_width=True):
+                    st.session_state["sensor_active"] = False
+                    st.session_state["manual_aqi_follow_sensor"] = False
+                    st.rerun()
+                _r = _sensor.get_reading()
+                if _r["error"]:
+                    st.error(f"Error: {_r['error']}")
+                elif _r["ppm"] is not None:
+                    st.success(f"Connected · {_r['ppm']} PPM")
+                else:
+                    st.info("Connecting... (waiting for data)")
+        else:
+            st.caption("No serial ports detected. Plug in your Arduino.")
+
+        st.markdown("---")
         st.caption("BioAQI v2.0 · Personalized Air Quality Risk")
 
     # ── Derive primary condition (highest risk weight) ─────────────────────────
@@ -554,9 +636,31 @@ def _show_dashboard():
     # ── Manual mode input panel ────────────────────────────────────────────────
     if manual_mode:
         with st.expander("Manual Input Values", expanded=True):
+            # ── MQ135 live reading — auto-refreshes every 2 s ─────────────
+            _sensor_live_panel()
+            sensor_is_active = st.session_state.get("sensor_active", False)
+            follow_sensor = st.checkbox(
+                "Use live sensor for Current AQI",
+                key="manual_aqi_follow_sensor",
+                disabled=not sensor_is_active,
+                help="When enabled, the Current AQI slider follows the MQ135 live reading.",
+            )
+            if sensor_is_active and follow_sensor:
+                sensor_aqi = float(min(st.session_state.get("sensor_aqi", 150), 500))
+                if st.session_state.get("manual_live_aqi") != sensor_aqi:
+                    st.session_state["manual_live_aqi"] = sensor_aqi
+            elif not sensor_is_active:
+                st.caption("Connect the MQ135 sensor to enable live AQI sync.")
+
             mc1, mc2, mc3, mc4 = st.columns(4)
             with mc1:
-                manual_aqi   = st.slider("Current AQI", 0, 500, 150, key="m_aqi")
+                manual_aqi = st.slider(
+                    "Current AQI",
+                    0,
+                    500,
+                    key="manual_live_aqi",
+                    disabled=follow_sensor and sensor_is_active,
+                )
             with mc2:
                 manual_temp  = st.slider("Temperature (°C)", -5, 50, 25, key="m_temp")
             with mc3:
