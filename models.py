@@ -94,7 +94,8 @@ def train_aqi_forecaster(df: pd.DataFrame, horizon: int = 1) -> dict:
         learning_rate=0.04,
         subsample=0.8,
         colsample_bytree=0.8,
-        min_child_weight=3,
+        min_child_weight=5,       # raised from 3 → reduces fitting to outlier rows
+        gamma=0.1,                # min loss reduction to make a split (prunes noisy splits)
         reg_alpha=0.1,
         reg_lambda=1.0,
         early_stopping_rounds=40,
@@ -110,6 +111,7 @@ def train_aqi_forecaster(df: pd.DataFrame, horizon: int = 1) -> dict:
 
     y_pred = np.clip(model.predict(X_test), 0, 500)
     metrics = regression_report(y_test, y_pred, label=f"AQI Forecaster +{horizon}d")
+    metrics["best_iteration"] = int(model.best_iteration) if model.best_iteration else 700
 
     # Also compute training-set metrics to expose bias/variance in the dashboard
     y_train_pred = np.clip(model.predict(X_train), 0, 500)
@@ -118,7 +120,7 @@ def train_aqi_forecaster(df: pd.DataFrame, horizon: int = 1) -> dict:
 
     path = MODELS_DIR / f"aqi_forecaster_h{horizon}.joblib"
     joblib.dump({"model": model, "feat_cols": feat_cols}, path)
-    print(f"  Saved → {path}")
+    print(f"  Saved → {path}  (stopped at iteration {metrics['best_iteration']} / 700)")
 
     return {
         "model": model,

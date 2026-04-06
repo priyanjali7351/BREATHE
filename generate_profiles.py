@@ -15,22 +15,25 @@ from preprocess import normalize_aqi_india
 
 CONDITION_WEIGHTS = {
     "Healthy":        1.00,
-    "Mild Asthma":    1.40,
-    "Severe Asthma":  1.70,
-    "Heart Disease":  1.80,
-    "Diabetes":       1.25,
+    "Mild Asthma":    1.40,   # respiratory — paper: 1.4–1.5
+    "Severe Asthma":  1.50,   # respiratory — paper: 1.4–1.5 (was 1.70, now evidence-aligned)
+    "Heart Disease":  1.40,   # cardiovascular — paper: 1.3–1.4 (was 1.80, now evidence-aligned)
+    "Diabetes":       1.30,   # metabolic comorbidity
     "Elderly (65+)":  1.35,
     "Child (<12)":    1.30,
 }
-_MAX_CONDITION_WEIGHT = max(CONDITION_WEIGHTS.values())  # 1.80
+_MAX_CONDITION_WEIGHT = max(CONDITION_WEIGHTS.values())  # 1.50
 
+# Paper-based activity multipliers (conservative range of 2–5× inhaled dose).
+# Activity effect is now consolidated inside _profile_component + _aqi_activity_factor,
+# NOT applied to aqi_comp / poll_comp separately in compute_phrs.
 ACTIVITY_MULTIPLIERS = {
-    "Sedentary":  1.00,
-    "Moderate":   1.15,
-    "Active":     1.35,
-    "Athlete":    1.50,
+    "Sedentary": 1.0,
+    "Moderate":  1.5,
+    "Active":    2.0,
+    "Athlete":   2.5,   # capped at 2.5 (paper max is 5×, too unstable for ML)
 }
-_MAX_ACTIVITY_MULT = max(ACTIVITY_MULTIPLIERS.values())  # 1.50
+_MAX_ACTIVITY_MULT = max(ACTIVITY_MULTIPLIERS.values())  # 2.5
 
 # Pollutant sensitivity weights per condition.
 # These reflect peer-reviewed clinical evidence on differential susceptibility:
@@ -59,10 +62,13 @@ POLLUTANT_THRESHOLDS = {
 }
 
 # PHRS component weights — must sum to 1.0
-W_AQI      = 0.50   # Raw air quality level
-W_POLLUTANT = 0.25  # Pollutant composition & exceedances
-W_PROFILE  = 0.20   # Personal vulnerability (exposure, age)
-W_TREND    = 0.05   # Future AQI trend penalty
+# W_AQI and W_POLLUTANT are calibrated via calibrate_weights.py (Ridge regression
+# on HealthImpactScore from air_quality_health_impact_data.csv).
+# W_PROFILE and W_TREND are set from literature; run calibrate_weights.py to tune AQI/pollutant.
+W_AQI       = 0.50   # Raw air quality level
+W_POLLUTANT = 0.25   # Pollutant composition & exceedances
+W_PROFILE   = 0.20   # Personal vulnerability (exposure, age, activity, condition)
+W_TREND     = 0.05   # Future AQI trend penalty (paper-based; no temporal data to calibrate)
 
 
 def aggregate_condition_weight(conditions: list[str]) -> float:
@@ -131,28 +137,47 @@ def _pollutant_component(pollutants: dict[str, float], conditions: list[str]) ->
     return float(np.clip(weighted_avg_exceedance * 50.0, 0.0, 100.0))
 
 
+def _aqi_activity_factor(aqi: float) -> float:
+    """
+    AQI-dependent activity scaling (paper: low AQI → activity is protective;
+    high AQI → activity amplifies harm via increased inhaled dose).
+
+    AQI < 100  → 0.8   (protective effect: being active outdoors is still OK)
+    AQI 100–200 → 1.0  (neutral: standard activity multiplier applies)
+    AQI > 200  → 1.4   (penalty: activity dramatically increases pollutant intake)
+    """
+    if aqi < 100:
+        return 0.8
+    if aqi <= 200:
+        return 1.0
+    return 1.4
+
+
 def _profile_component(
     profile: HealthProfile,
+    aqi: float = 100.0,
     temp_c: float | None = None,
     humidity: float | None = None,
 ) -> float:
     """
-    Personal vulnerability sub-score (0–100), covering exposure and age.
-    Two sub-contributors, each mapped to a 0–50 range:
-      - Exposure factor: how many hours per day are they outside?
-      - Age factor:      are they in a vulnerable age group?
+    Personal vulnerability sub-score (0–100).
 
-    Activity is intentionally excluded here — it is applied as a direct
-    multiplier to the ambient AQI and pollutant components in compute_phrs,
-    giving it 3–4× more leverage on the final score.
+    Combines four factors:
+      1. Base exposure: hours outdoors per day
+      2. Age vulnerability: children <12 and elderly >65
+      3. Activity multiplier: paper-based (1.0 / 1.5 / 2.0 / 2.5)
+      4. AQI-activity interaction: at high AQI, activity amplifies risk
 
-    Optional weather modifiers:
-      - Extreme heat (temp > 35°C) raises exposure slightly (higher O3 + exertion risk)
-      - Cold + humid (temp < 10°C, humidity > 70%) raises exposure slightly (fog/PM trapping)
+    The base exposure + age gives a raw score [0–100], which is then
+    scaled by (activity_mult × aqi_activity_factor) / reference_scale
+    to keep the output in [0–100].
+
+    Weather modifiers:
+      - Extreme heat (>35°C): +6% to exposure (higher O3 + exertion risk)
+      - Cold + fog (<10°C + humidity >70%): +5% to exposure (PM trapping)
     """
-    # exposure factor: 1 + 0.06 * hours, capped at 10h
+    # ── Base exposure (hours outdoors → [1.0, 1.6]) ───────────────────────────
     exposure_factor = 1.0 + 0.06 * min(profile.hours_outdoors, 10.0)
-    # Weather modifiers on exposure (capped at +0.1 total to avoid dominating)
     if temp_c is not None and temp_c > 35.0:
         exposure_factor = min(exposure_factor + 0.06, 1.7)   # heat stress
     if temp_c is not None and humidity is not None and temp_c < 10.0 and humidity > 70.0:
@@ -160,7 +185,7 @@ def _profile_component(
     # Map [1.0, 1.6] → [0, 50]
     exposure_contrib = (exposure_factor - 1.0) / 0.6 * 50.0
 
-    # Age: children <12 and elderly >65 are more vulnerable
+    # ── Age vulnerability ─────────────────────────────────────────────────────
     if profile.age < 12:
         age_factor = 1.25
     elif profile.age > 65:
@@ -170,7 +195,17 @@ def _profile_component(
     # Map [1.0, 1.25] → [0, 50]
     age_contrib = (age_factor - 1.0) / 0.25 * 50.0
 
-    return float(np.clip(exposure_contrib + age_contrib, 0.0, 100.0))
+    base_score = float(np.clip(exposure_contrib + age_contrib, 0.0, 100.0))
+
+    # ── Activity × AQI interaction ────────────────────────────────────────────
+    activity_mult     = ACTIVITY_MULTIPLIERS.get(profile.activity_level, 1.0)
+    aqi_act_factor    = _aqi_activity_factor(aqi)
+    combined_mult     = activity_mult * aqi_act_factor
+
+    # Normalize so Sedentary (1.0) at neutral AQI (100–200) gives unchanged score.
+    # Reference = Sedentary × neutral AQI factor = 1.0 × 1.0 = 1.0
+    # Clip final score to [0, 100]
+    return float(np.clip(base_score * combined_mult, 0.0, 100.0))
 
 
 def _trend_component(aqi: float, predicted_aqi: float | None) -> float:
@@ -231,20 +266,17 @@ def compute_phrs(
 
     aqi_comp   = _aqi_component(aqi)
     poll_comp  = _pollutant_component(pollutants, cond_list)
-    prof_comp  = _profile_component(profile, temp_c=temp_c, humidity=humidity)
+    # Activity + AQI-activity interaction now fully inside _profile_component
+    prof_comp  = _profile_component(profile, aqi=aqi, temp_c=temp_c, humidity=humidity)
     trend_val  = _trend_component(aqi, predicted_aqi)
-
-    # Activity multiplier applied directly to ambient exposure (AQI + pollutant)
-    # so that changing activity level has a proportional effect on 75% of the score
-    activity_mult = ACTIVITY_MULTIPLIERS.get(profile.activity_level, 1.0)
 
     # Rising trend adds to risk; falling trend gives partial relief
     trend_bonus  = max(0.0, trend_val)
     trend_relief = min(0.0, trend_val)  # negative or zero
 
     base_phrs = (
-        W_AQI       * aqi_comp  * activity_mult
-        + W_POLLUTANT * poll_comp * activity_mult
+        W_AQI       * aqi_comp
+        + W_POLLUTANT * poll_comp
         + W_PROFILE   * prof_comp
         + W_TREND     * trend_bonus
     )

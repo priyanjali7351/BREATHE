@@ -28,6 +28,13 @@ MAJOR_CITIES = [
     "Chandigarh", "Gurugram", "Guwahati", "Visakhapatnam", "Bhopal",
 ]
 
+# Canonical city encoding — alphabetical, fixed regardless of which cities survive
+# the dataset merge. Import this in realtime.py and any inference code to guarantee
+# consistent city_enc values at train and predict time.
+CITY_ENC_MAP: dict[str, int] = {
+    city: i for i, city in enumerate(sorted(MAJOR_CITIES))
+}
+
 # Core pollutants: NH3 dropped — 100% null in INDIA_AQI_COMPLETE, 35% missing in city_day
 POLLUTANTS = ["PM2.5", "PM10", "NO2", "SO2", "CO", "O3"]
 
@@ -433,9 +440,10 @@ def _engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["month"]     = df["Date"].dt.month
     df["dayofweek"] = df["Date"].dt.dayofweek
 
-    # ── City label encoding (ordinal, 0-indexed alphabetically) ──────────────
-    city_order = sorted(df["City"].unique())
-    df["city_enc"] = df["City"].map({c: i for i, c in enumerate(city_order)})
+    # ── City label encoding — uses CITY_ENC_MAP (fixed canonical order) ─────
+    # This guarantees consistent ordinals at train and inference time even if
+    # a city has zero rows in a particular dataset split.
+    df["city_enc"] = df["City"].map(CITY_ENC_MAP)
 
     # ── Season one-hot (4 dummies) ────────────────────────────────────────────
     df["Season"] = df["Season"].str.strip()

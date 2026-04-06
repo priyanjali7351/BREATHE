@@ -1,5 +1,5 @@
 """
-BioAQI — Streamlit Dashboard
+BREATHE — Streamlit Dashboard
 Run: streamlit run app.py
 
 Flow:
@@ -29,8 +29,7 @@ import sensor as _sensor
 # ─── Page config ──────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="BioAQI — Personal Air Quality Risk",
-    page_icon="🌬️",
+    page_title="BREATHE — Personal Air Quality Risk",
     layout="wide",
 )
 
@@ -332,7 +331,7 @@ def _show_auth_page():
     _, centre, _ = st.columns([1, 2, 1])
     with centre:
         st.markdown(
-            "<h1 style='text-align:center; margin-bottom:0'>🌬️ BioAQI</h1>",
+            "<h1 style='text-align:center; margin-bottom:0'>BREATHE</h1>",
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -373,7 +372,7 @@ def _show_auth_page():
             st.markdown("---")
             st.markdown("### Your Health Profile")
             st.caption(
-                "This helps BioAQI personalise your Air Quality Risk Score. "
+                "This helps BREATHE personalise your Air Quality Risk Score. "
                 "You can update it anytime from the dashboard."
             )
 
@@ -580,7 +579,7 @@ def _show_dashboard():
             st.caption("No serial ports detected. Plug in your Arduino.")
 
         st.markdown("---")
-        st.caption("BioAQI v2.0 · Personalized Air Quality Risk")
+        st.caption("BREATHE v2.0 · Personalized Air Quality Risk")
 
     # ── Derive primary condition (highest risk weight) ─────────────────────────
     primary_condition = _primary_condition(sb_conditions)
@@ -593,9 +592,9 @@ def _show_dashboard():
     )
 
     # ── Title ──────────────────────────────────────────────────────────────────
-    st.title("🌬️ BioAQI — Personal Health Risk Score")
+    st.title("BREATHE — Personal Health Risk Score")
     st.markdown(
-        "Standard AQI treats everyone equally. **BioAQI** computes *your* personal risk "
+        "Standard AQI treats everyone equally. **BREATHE** computes *your* personal risk "
         "based on your health profile, activity, weather conditions, and predicted air quality trends."
     )
 
@@ -609,7 +608,7 @@ def _show_dashboard():
         )
 
     if not MODELS_READY:
-        st.warning("⚠️ Models not found. Run `python train.py` first to train all models.")
+        st.warning("Models not found. Run `python train.py` first to train all models.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # MODE TOGGLE — Auto vs Manual
@@ -917,7 +916,17 @@ def _show_dashboard():
 
     st.markdown("---")
 
-    # ── Row 3: Pollutant breakdown ─────────────────────────────────────────────
+    # ── Row 3: Personalized Recommendations (moved here — just below gauge) ────
+    st.subheader("Personalized Recommendations")
+    recs = get_recommendations(phrs_score, profile, sb_conditions, display_aqi, trend_aqi)
+    if is_forecast:
+        st.caption(f"Recommendations based on predicted conditions at +{horizon} day{'s' if horizon > 1 else ''}.")
+    for rec in recs:
+        st.markdown(f"- {rec}")
+
+    st.markdown("---")
+
+    # ── Row 4: Pollutant breakdown ─────────────────────────────────────────────
     st.subheader("Pollutant Breakdown")
 
     if manual_mode:
@@ -1018,16 +1027,6 @@ def _show_dashboard():
             font=dict(color="white"), margin=dict(t=10, r=70),
         )
         st.plotly_chart(fig_hist, use_container_width=True)
-
-    st.markdown("---")
-
-    # ── Row 6: Recommendations ────────────────────────────────────────────────
-    st.subheader("Personalized Recommendations")
-    recs = get_recommendations(phrs_score, profile, sb_conditions, display_aqi, trend_aqi)
-    if is_forecast:
-        st.caption(f"Recommendations based on predicted conditions at +{horizon} day{'s' if horizon > 1 else ''}.")
-    for rec in recs:
-        st.markdown(f"- {rec}")
 
     st.markdown("---")
 
@@ -1182,7 +1181,7 @@ def _show_dashboard():
     # ── Footer ────────────────────────────────────────────────────────────────
     st.markdown("---")
     st.caption(
-        "BioAQI v2.0 · Personal Health Risk Score (PHRS) · "
+        "BREATHE v2.0 · Personal Health Risk Score (PHRS) · "
         "Data: India AQI Dataset + INDIA_AQI_COMPLETE · For educational/research use only."
     )
 
