@@ -10,6 +10,11 @@ from dataclasses import dataclass, asdict
 
 from preprocess import normalize_aqi_india
 
+try:
+    from nhanes_scorer import susceptibility_and_weight
+except ImportError:
+    from ml.pipelines.nhanes_scorer import susceptibility_and_weight
+
 
 # ─── Health sensitivity weights (domain knowledge) ────────────────────────────
 
@@ -64,11 +69,27 @@ POLLUTANT_THRESHOLDS = {
 # PHRS component weights — must sum to 1.0
 # W_AQI and W_POLLUTANT are calibrated via calibrate_weights.py (Ridge regression
 # on HealthImpactScore from air_quality_health_impact_data.csv).
-# W_PROFILE and W_TREND are set from literature; run calibrate_weights.py to tune AQI/pollutant.
-W_AQI       = 0.50   # Raw air quality level
-W_POLLUTANT = 0.25   # Pollutant composition & exceedances
-W_PROFILE   = 0.20   # Personal vulnerability (exposure, age, activity, condition)
-W_TREND     = 0.05   # Future AQI trend penalty (paper-based; no temporal data to calibrate)
+# W_PROFILE is set from literature.
+#
+# W_TREND was removed: PHRS is now Option B (multi-horizon) — the forecaster
+# scores now/+6h/+24h as three SEPARATE PHRS values, each against its own AQI,
+# rather than folding a single "future AQI" nudge into one blended score. Its
+# old 0.05 share is redistributed proportionally across the three remaining
+# components so they still sum to 1.0.
+W_AQI       = 0.52   # Raw air quality level
+W_POLLUTANT = 0.26   # Pollutant composition & exceedances
+W_PROFILE   = 0.22   # Personal vulnerability (exposure, age, activity, condition)
+
+# Declared-asthma multiplicative bump, applied ONLY in the calculator (not
+# learned by any model). Asthma risk isn't predictable from body metrics
+# (age/BMI/smoking) the way the NHANES classifier's other outcomes are, so
+# rather than force it into the data-derived condition_weight, we treat a
+# user-declared asthma condition as a known fact and bump the weight directly.
+ASTHMA_BUMP = 1.15
+
+# Ceiling for the final condition weight (classifier weight × asthma bump,
+# if applicable), matching the old CONDITION_WEIGHTS/aggregate cap of 2.0.
+_CONDITION_WEIGHT_CEILING = 2.0
 
 
 def aggregate_condition_weight(conditions: list[str]) -> float:
@@ -87,6 +108,50 @@ def aggregate_condition_weight(conditions: list[str]) -> float:
     )
     effective = weights[0] + 0.4 * sum(w - 1.0 for w in weights[1:])
     return float(min(effective, 2.0))
+
+
+def _has_asthma(conditions: list[str] | None) -> bool:
+    """True if any declared condition name contains 'asthma' (case-insensitive)."""
+    if not conditions:
+        return False
+    return any("asthma" in c.lower() for c in conditions)
+
+
+def condition_weight_for(
+    age,
+    gender,
+    bmi,
+    ever_smoker=None,
+    current_smoker=None,
+    conditions: list[str] | None = None,
+) -> dict:
+    """
+    Data-derived condition weight for the PHRS calculator.
+
+    Replaces the hardcoded CONDITION_WEIGHTS lookup with the NHANES
+    classifier's susceptibility score (age/gender/BMI/smoking →
+    condition_weight), then applies the declared-asthma bump on top —
+    asthma isn't something the classifier can infer from body metrics,
+    so it's layered in here as a known fact rather than learned.
+    """
+    # gender is required by the classifier; default to the RIAGENDR "male"
+    # code when callers (e.g. the /predict API) don't collect it, rather
+    # than crashing on missing demographic data.
+    gender_for_model = gender if gender is not None else 1
+
+    scored = susceptibility_and_weight(age, gender_for_model, bmi, ever_smoker, current_smoker)
+    base_weight = scored["condition_weight"]
+
+    asthma_applied = _has_asthma(conditions)
+    weight = base_weight * ASTHMA_BUMP if asthma_applied else base_weight
+    weight = float(np.clip(weight, 1.0, _CONDITION_WEIGHT_CEILING))
+
+    return {
+        "susceptibility": scored["susceptibility"],
+        "base_weight": base_weight,
+        "asthma_applied": asthma_applied,
+        "condition_weight": weight,
+    }
 
 
 @dataclass
@@ -229,66 +294,112 @@ def compute_phrs(
     aqi: float,
     pollutants: dict[str, float],
     profile: HealthProfile,
-    predicted_aqi: float | None = None,
+    predicted_aqi: float | None = None,  # deprecated, ignored — see compute_phrs_horizons
     temp_c: float | None = None,
     humidity: float | None = None,
     conditions: list[str] | None = None,
+    gender=None,
+    bmi=None,
+    ever_smoker=None,
+    current_smoker=None,
+    cond_weight: float | None = None,
 ) -> float:
     """
-    Compute Personal Health Risk Score (0–100) using an additive weighted sum.
+    Compute Personal Health Risk Score (0–100) for a SINGLE AQI/horizon.
 
     Formula
     -------
-    base_PHRS = W_AQI      * aqi_component(aqi)      * activity_mult
-              + W_POLLUTANT * pollutant_component(...)  * activity_mult
-              + W_PROFILE   * profile_component(profile)  (exposure + age only)
-              + W_TREND     * max(0, trend_component(aqi, predicted_aqi))
-
-    Activity is applied directly to the ambient exposure components so that
-    an Athlete vs Sedentary user sees a 3–4× larger score delta than before.
-
-    The condition weight (1.0–2.0) scales the final score. For multiple
-    conditions, aggregate_condition_weight() adds a cumulative penalty for
-    each co-morbidity rather than silently dropping them.
+    base_PHRS = W_AQI       * aqi_component(aqi)
+              + W_POLLUTANT * pollutant_component(pollutants, conditions)
+              + W_PROFILE   * profile_component(profile, aqi, temp_c, humidity)
 
     PHRS = clip(base_PHRS * condition_weight, 0, 100)
 
+    There is no trend/forecast term here: PHRS is now Option B (multi-
+    horizon) — call compute_phrs_horizons() to get separate now/+6h/+24h
+    scores, each scored against its own AQI via this function.
+
+    condition_weight is data-derived from the NHANES susceptibility
+    classifier (condition_weight_for), with a declared-asthma bump applied
+    on top. Pass cond_weight explicitly to reuse a weight already computed
+    once (e.g. across horizons) instead of recomputing it here.
+
     Parameters
     ----------
-    aqi           : current raw AQI (India CPCB scale)
-    pollutants    : dict of pollutant concentrations (µg/m³)
-    profile       : user health profile (single condition; used as fallback)
-    predicted_aqi : optional forecasted AQI for trend penalty
+    aqi           : raw AQI for this horizon (India CPCB scale)
+    pollutants    : dict of pollutant concentrations (µg/m³) for this horizon
+    profile       : user health profile (age/activity/hours; condition is a
+                    fallback if `conditions` is not given)
+    predicted_aqi : deprecated, ignored. Kept only so existing callers that
+                    still pass it (e.g. the Streamlit app) don't break.
     conditions    : full list of user conditions (overrides profile.condition
-                    for weight & sensitivity calculation)
+                    for pollutant sensitivity & the asthma bump)
+    gender, bmi, ever_smoker, current_smoker : demographic inputs forwarded
+                    to the NHANES classifier when cond_weight isn't precomputed
+    cond_weight   : precomputed condition weight (e.g. from condition_weight_for
+                    or compute_phrs_horizons) to reuse instead of recomputing
     """
     cond_list = conditions if conditions else [profile.condition]
 
-    aqi_comp   = _aqi_component(aqi)
-    poll_comp  = _pollutant_component(pollutants, cond_list)
-    # Activity + AQI-activity interaction now fully inside _profile_component
-    prof_comp  = _profile_component(profile, aqi=aqi, temp_c=temp_c, humidity=humidity)
-    trend_val  = _trend_component(aqi, predicted_aqi)
-
-    # Rising trend adds to risk; falling trend gives partial relief
-    trend_bonus  = max(0.0, trend_val)
-    trend_relief = min(0.0, trend_val)  # negative or zero
+    aqi_comp  = _aqi_component(aqi)
+    poll_comp = _pollutant_component(pollutants, cond_list)
+    prof_comp = _profile_component(profile, aqi=aqi, temp_c=temp_c, humidity=humidity)
 
     base_phrs = (
         W_AQI       * aqi_comp
         + W_POLLUTANT * poll_comp
         + W_PROFILE   * prof_comp
-        + W_TREND     * trend_bonus
     )
 
-    # Apply falling-trend relief (capped at −20 points, scaled by W_TREND)
-    base_phrs += W_TREND * trend_relief
+    if cond_weight is None:
+        cond_weight = condition_weight_for(
+            profile.age, gender, bmi, ever_smoker, current_smoker, cond_list
+        )["condition_weight"]
 
-    # Aggregate condition weight accounts for co-morbidities (1.0–2.0)
-    cond_weight = aggregate_condition_weight(cond_list)
     phrs = np.clip(base_phrs * cond_weight, 0.0, 100.0)
 
     return round(float(phrs), 2)
+
+
+PHRS_HORIZONS = ("now", "+6h", "+24h")
+
+
+def compute_phrs_horizons(
+    aqi_by_horizon: dict[str, float],
+    pollutants_by_horizon: dict[str, dict[str, float]],
+    profile: HealthProfile,
+    *,
+    gender=None,
+    bmi=None,
+    ever_smoker=None,
+    current_smoker=None,
+    conditions: list[str] | None = None,
+    temp_c: float | None = None,
+    humidity: float | None = None,
+) -> dict:
+    """
+    Option B multi-horizon PHRS: separate scores for now/+6h/+24h, each
+    scored against its own AQI, instead of one blended score with a trend
+    nudge. The condition weight doesn't depend on AQI, so it's computed
+    once and reused across all horizons.
+    """
+    cond_list = conditions if conditions else [profile.condition]
+    cw = condition_weight_for(profile.age, gender, bmi, ever_smoker, current_smoker, cond_list)
+
+    horizons = {}
+    for h in PHRS_HORIZONS:
+        aqi = aqi_by_horizon[h]
+        pollutants = pollutants_by_horizon[h]
+        phrs = compute_phrs(
+            aqi, pollutants, profile,
+            temp_c=temp_c, humidity=humidity,
+            conditions=cond_list,
+            cond_weight=cw["condition_weight"],
+        )
+        band, color = phrs_category(phrs)
+        horizons[h] = {"aqi": aqi, "phrs": phrs, "band": band, "color": color}
+
+    return {"condition": cw, "horizons": horizons}
 
 
 def phrs_category(score: float) -> tuple[str, str]:

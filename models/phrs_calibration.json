@@ -1,0 +1,180 @@
+{
+  "note": "PROTOTYPE internal-consistency calibration only \u2014 NOT calibrated against real (Delhi) health outcomes, which we don't have yet. This checks that the NHANES-classifier-derived condition weight and the declared-asthma bump produce clinically sensible relative ordering across profiles, not absolute accuracy.",
+  "scenario_aqi": {
+    "now": 180,
+    "+6h": 220,
+    "+24h": 150
+  },
+  "asthma_bump": 1.15,
+  "K": 1.0,
+  "profiles": {
+    "young_clean": {
+      "condition": {
+        "susceptibility": 0.04998989571444371,
+        "base_weight": 1.0499898957144438,
+        "asthma_applied": false,
+        "condition_weight": 1.0499898957144438
+      },
+      "horizons": {
+        "now": {
+          "aqi": 180,
+          "phrs": 46.13,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        },
+        "+6h": {
+          "aqi": 220,
+          "phrs": 54.33,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        },
+        "+24h": {
+          "aqi": 150,
+          "phrs": 39.5,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        }
+      }
+    },
+    "young_asthmatic": {
+      "condition": {
+        "susceptibility": 0.04998989571444371,
+        "base_weight": 1.0499898957144438,
+        "asthma_applied": true,
+        "condition_weight": 1.2074883800716103
+      },
+      "horizons": {
+        "now": {
+          "aqi": 180,
+          "phrs": 51.09,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        },
+        "+6h": {
+          "aqi": 220,
+          "phrs": 60.58,
+          "band": "High Risk",
+          "color": "#e67e22"
+        },
+        "+24h": {
+          "aqi": 150,
+          "phrs": 43.81,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        }
+      }
+    },
+    "mid_smoker": {
+      "condition": {
+        "susceptibility": 0.12547762122697476,
+        "base_weight": 1.1254776212269748,
+        "asthma_applied": false,
+        "condition_weight": 1.1254776212269748
+      },
+      "horizons": {
+        "now": {
+          "aqi": 180,
+          "phrs": 49.44,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        },
+        "+6h": {
+          "aqi": 220,
+          "phrs": 58.23,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        },
+        "+24h": {
+          "aqi": 150,
+          "phrs": 42.34,
+          "band": "Moderate Risk",
+          "color": "#f39c12"
+        }
+      }
+    },
+    "elderly_obese_smoker": {
+      "condition": {
+        "susceptibility": 0.6000104729452675,
+        "base_weight": 1.6000104729452675,
+        "asthma_applied": false,
+        "condition_weight": 1.6000104729452675
+      },
+      "horizons": {
+        "now": {
+          "aqi": 180,
+          "phrs": 91.41,
+          "band": "Critical",
+          "color": "#e74c3c"
+        },
+        "+6h": {
+          "aqi": 220,
+          "phrs": 100.0,
+          "band": "Critical",
+          "color": "#e74c3c"
+        },
+        "+24h": {
+          "aqi": 150,
+          "phrs": 81.31,
+          "band": "Critical",
+          "color": "#e74c3c"
+        }
+      }
+    },
+    "elderly_obese_smoker_asthma": {
+      "condition": {
+        "susceptibility": 0.6000104729452675,
+        "base_weight": 1.6000104729452675,
+        "asthma_applied": true,
+        "condition_weight": 1.8400120438870575
+      },
+      "horizons": {
+        "now": {
+          "aqi": 180,
+          "phrs": 100.0,
+          "band": "Critical",
+          "color": "#e74c3c"
+        },
+        "+6h": {
+          "aqi": 220,
+          "phrs": 100.0,
+          "band": "Critical",
+          "color": "#e74c3c"
+        },
+        "+24h": {
+          "aqi": 150,
+          "phrs": 91.05,
+          "band": "Critical",
+          "color": "#e74c3c"
+        }
+      }
+    },
+    "elderly_clean": {
+      "condition": {
+        "susceptibility": 0.32886351239411377,
+        "base_weight": 1.3288635123941137,
+        "asthma_applied": false,
+        "condition_weight": 1.3288635123941137
+      },
+      "horizons": {
+        "now": {
+          "aqi": 180,
+          "phrs": 75.92,
+          "band": "High Risk",
+          "color": "#e67e22"
+        },
+        "+6h": {
+          "aqi": 220,
+          "phrs": 91.85,
+          "band": "Critical",
+          "color": "#e74c3c"
+        },
+        "+24h": {
+          "aqi": 150,
+          "phrs": 67.53,
+          "band": "High Risk",
+          "color": "#e67e22"
+        }
+      }
+    }
+  }
+}

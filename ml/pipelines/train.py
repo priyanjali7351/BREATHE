@@ -134,7 +134,7 @@ def main(
             f"{m['rmse']:>11.2f} {m['train_r2']:>9.4f}"
         )
     print("\n  All models trained and saved to models/")
-    print("  Run: streamlit run app.py")
+    print("  Run: uvicorn demo_api:app --reload")
     print("=" * 60)
 
 

@@ -27,7 +27,7 @@ HORIZONS_HOURS = [6, 12, 24, 48]
 # |US_AQI(t+h) - US_AQI(t)| on the training split) and persisted to
 # models/sanity_caps.json so the serving path can load it without retraining.
 MAX_HOURLY_CHANGE: dict[int, float] = {}
-# Best-effort load at import time so serving code (app.py, api/) gets the
+# Best-effort load at import time so serving code (demo_api.py, backend/api/) gets the
 # trained caps without needing an explicit call; train.py overwrites this
 # dict again right after computing fresh caps.
 
