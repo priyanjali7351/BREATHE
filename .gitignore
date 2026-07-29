@@ -11,6 +11,10 @@ data/phrs_dataset.csv
 # Download manually — see README for sources
 data/INDIA_AQI_COMPLETE_20251126.csv
 
+# ─── NHANES source XPT files (27MB raw survey data) ───────────────────────────
+# Download manually from CDC NHANES — see ml/pipelines/train_nhanes_susceptibility.py
+data/nhanes/*.xpt
+
 # ─── Local user state (sensitive — contains hashed passwords) ─────────────────
 # Each deployment / collaborator gets their own users.json
 data/users.json
