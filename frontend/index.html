@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BREATHE — Personal Air Risk</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="atmosphere" id="atmosphere"></div>
+  <canvas id="particles"></canvas>
+  <div class="grain"></div>
+
+  <main class="stage">
+    <header data-reveal="1">
+      <div class="brand">
+        <h1>Breathe</h1>
+        <span class="tag">Personal Air-Quality Risk · Live</span>
+      </div>
+      <div class="modeswitch" id="modeswitch">
+        <button data-mode="auto" class="on">City Air</button>
+        <button data-mode="sensor">Your Air</button>
+      </div>
+    </header>
+
+    <!-- LEFT: the air -->
+    <section class="panel left">
+      <div class="metric" data-reveal="2">
+        <div class="kicker"><span id="airLabel">Ambient · <b id="cityName">Delhi</b></span></div>
+        <div><span class="value" id="aqiVal">—</span><span class="unit">AQI</span></div>
+        <div class="sub" id="airSub">particulate index</div>
+      </div>
+      <div class="chips" id="pollChips" data-reveal="3"></div>
+    </section>
+
+    <!-- CENTER: breathing risk orb -->
+    <section class="core">
+      <div class="orb-wrap" id="orbWrap" style="--breath:4s">
+        <div class="orb-breath"></div>
+        <svg class="orb-ring" viewBox="0 0 200 200">
+          <circle class="track" cx="100" cy="100" r="92"></circle>
+          <circle class="fill"  cx="100" cy="100" r="92" id="orbFill"
+                  stroke-dasharray="578" stroke-dashoffset="578"></circle>
+        </svg>
+        <div class="orb-center">
+          <div class="score" id="phrsVal">—</div>
+          <div class="score-label" id="phrsCat">standby</div>
+          <div class="score-cap">Personal Health Risk Score</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: the body -->
+    <section class="panel right">
+      <div class="metric" data-reveal="2">
+        <div class="kicker"><span>Body · <b id="activityName">resting</b></span></div>
+        <div><span class="value" id="hrVal">—</span><span class="unit">BPM</span></div>
+        <div class="sub" id="hrSub">heart rate → ventilation</div>
+      </div>
+      <svg class="ecg" viewBox="0 0 240 46" preserveAspectRatio="none" data-reveal="3">
+        <path id="ecgPath" d=""></path>
+      </svg>
+      <div class="chips" data-reveal="3">
+        <span class="chip">age <b id="ageChip">30</b></span>
+        <span class="chip" id="condChip">Healthy</span>
+      </div>
+    </section>
+
+    <footer data-reveal="4">
+      <div class="status-dots">
+        <span class="dot off" id="dotWatch"><i></i> Watch</span>
+        <span class="dot off" id="dotSensor"><i></i> Dust Sensor</span>
+        <span class="dot live" id="dotApi"><i></i> City API</span>
+      </div>
+      <div id="sourceLine">source · —</div>
+    </footer>
+  </main>
+
+  <button class="toggle-dock" id="dockToggle">Controls</button>
+  <aside class="dock" id="dock">
+    <h3>Signal Source & Profile</h3>
+
+    <label class="simtoggle"><input type="checkbox" id="simChk" /> Simulate (no hardware / fallback)</label>
+
+    <label>City (ambient)</label>
+    <select id="citySel"></select>
+
+    <div class="row">
+      <div>
+        <label>Age</label>
+        <input type="number" id="ageInp" value="30" min="1" max="120" />
+      </div>
+      <div>
+        <label>Condition</label>
+        <select id="condSel">
+          <option>Healthy</option>
+          <option>Mild Asthma</option>
+          <option>Severe Asthma</option>
+          <option>Heart Disease</option>
+          <option>Diabetes</option>
+          <option>Elderly (65+)</option>
+          <option>Child (&lt;12)</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="simControls" style="display:none">
+      <label>Simulated heart rate · <span class="simval" id="simHrVal">72</span> bpm</label>
+      <input type="range" id="simHr" min="55" max="180" value="72" />
+      <label>Simulated PM2.5 · <span class="simval" id="simPmVal">12</span> µg/m³</label>
+      <input type="range" id="simPm" min="0" max="500" value="12" />
+    </div>
+
+    <div id="hwControls">
+      <label>Watch (BLE) — scan, then pick yours</label>
+      <div class="row">
+        <select id="watchSel" style="flex:2"><option value="">— not connected —</option></select>
+        <button class="toggle-dock" id="scanWatchBtn" style="position:static; flex:1; padding:7px 6px">Scan</button>
+      </div>
+
+      <label>Dust sensor port</label>
+      <select id="portSel"><option value="">—</option></select>
+
+      <button class="toggle-dock" id="connectBtn" style="position:static; width:100%; margin-top:12px">Go Live</button>
+      <div id="connectMsg" style="font-size:10px; color:var(--ink-faint); margin-top:8px; letter-spacing:.08em"></div>
+    </div>
+  </aside>
+
+  <script src="app.js"></script>
+</body>
+</html>

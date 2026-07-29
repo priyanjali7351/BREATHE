@@ -192,7 +192,15 @@ def _build_row(
     wind_stagnation: float,
 ) -> pd.Series:
     """Construct a pd.Series with all 34 model features for today."""
-    today = pd.Timestamp(datetime.date.today())
+    # Anchor "current" and lag lookups to the most recent day actually present
+    # in the returned data, NOT the calendar date. Open-Meteo's past_days window
+    # ends yesterday, so keying to date.today() found no row and silently
+    # defaulted every field to zero. The latest available day is the real
+    # "current" reading. Calendar fields (month/season) below stay on today.
+    if not aq_df.empty:
+        today = aq_df["Date"].dt.normalize().max()
+    else:
+        today = pd.Timestamp(datetime.date.today())
 
     # ── Pollutants (today's daily mean) ───────────────────────────────────────
     pm25 = _get_val(aq_df, "pm2_5",            0, today, 0.0)
