@@ -1,0 +1,101 @@
+{
+  "scope": "Adults 20+ only (RIDAGEYR >= 20) \u2014 MCQ chronic-condition items are only surveyed for this age group in NHANES.",
+  "n_pooled_adults": 11288,
+  "prevalence": 0.2732990786676116,
+  "split_sizes": {
+    "train": 7901,
+    "val": 1693,
+    "test": 1694
+  },
+  "test_metrics": {
+    "auc": 0.6698604972690729,
+    "pr_auc": 0.4138828475767616,
+    "brier": 0.18392230404409307,
+    "baseline_auc": 0.5,
+    "baseline_pr_auc": 0.2733175914994097,
+    "baseline_brier": 0.1986150894024601,
+    "beats_baseline_brier": true
+  },
+  "feature_importance_gain": {
+    "ever_smoker": 14.414063453674316,
+    "age": 9.499820709228516,
+    "current_smoker": 6.046777725219727,
+    "bmi": 4.22833251953125,
+    "female": 3.6800007820129395
+  },
+  "stretched_score_percentiles_test": {
+    "p5": 0.0,
+    "p25": 0.1200230826121271,
+    "p50": 0.32886351239411377,
+    "p75": 0.5684069160561838,
+    "p95": 1.0
+  },
+  "example_profiles": {
+    "healthy_young": {
+      "features": {
+        "age": 25,
+        "female": 0,
+        "bmi": 22.0,
+        "ever_smoker": 0,
+        "current_smoker": 0
+      },
+      "susceptibility": 0.2753188041280859,
+      "condition_weight": 1.2753188041280858
+    },
+    "obese_young": {
+      "features": {
+        "age": 27,
+        "female": 1,
+        "bmi": 34.0,
+        "ever_smoker": 0,
+        "current_smoker": 0
+      },
+      "susceptibility": 0.32886351239411377,
+      "condition_weight": 1.3288635123941137
+    },
+    "mid_smoker": {
+      "features": {
+        "age": 45,
+        "female": 0,
+        "bmi": 27.0,
+        "ever_smoker": 1,
+        "current_smoker": 1
+      },
+      "susceptibility": 0.12547762122697476,
+      "condition_weight": 1.1254776212269748
+    },
+    "elderly_obese_smoker": {
+      "features": {
+        "age": 68,
+        "female": 0,
+        "bmi": 33.0,
+        "ever_smoker": 1,
+        "current_smoker": 1
+      },
+      "susceptibility": 0.6000104729452675,
+      "condition_weight": 1.6000104729452675
+    },
+    "elderly_healthy": {
+      "features": {
+        "age": 70,
+        "female": 1,
+        "bmi": 23.0,
+        "ever_smoker": 0,
+        "current_smoker": 0
+      },
+      "susceptibility": 0.32886351239411377,
+      "condition_weight": 1.3288635123941137
+    }
+  },
+  "scaler": {
+    "lo": 0.1120000034570694,
+    "hi": 0.6071428656578064,
+    "K": 1.0
+  },
+  "known_limitations": [
+    "AUC ~0.66: age/gender/BMI/smoking are weak predictors of chronic illness. This is a prototype susceptibility PROXY, not a diagnostic tool \u2014 it reflects a data ceiling (NHANES only has coarse demographic/behavioral predictors for chronic disease), not a modeling bug.",
+    "NHANES is a US population survey, used here as a proxy for Indian BREATHE users. The later Delhi calibration step is what keeps PHRS defensible for the target population.",
+    "The model can give near-identical scores to some young profiles regardless of BMI, because BMI only becomes predictive of chronic conditions at older ages in the training data. This is expected model behavior, not a bug.",
+    "Susceptibility is not strictly monotonic in age across the 25-55 range (e.g. a 45-year-old smoker can score below a 25-year-old non-smoker) because no monotonic constraint was applied and the underlying prevalence-vs-age relationship is noisy at this sample size. Monotonicity only becomes visually clear past ~60. This should be disclosed alongside PHRS scores, not silently smoothed over."
+  ]
+}

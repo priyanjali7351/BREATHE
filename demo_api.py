@@ -19,9 +19,19 @@ Open: http://127.0.0.1:8000
 import time
 from pathlib import Path
 
+import sys
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+# After the project reorg the ML pipeline modules (generate_profiles, preprocess)
+# live in ml/pipelines/ and use bare sibling imports, so put that dir on sys.path
+# and import them as bare modules — matching how they're designed to run. This
+# also lets realtime.py's `from preprocess import ...` resolve.
+_ML_PIPELINES = Path(__file__).resolve().parent / "ml" / "pipelines"
+if _ML_PIPELINES.exists():
+    sys.path.insert(0, str(_ML_PIPELINES))
 
 import realtime
 import gp2y10
