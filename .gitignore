@@ -36,3 +36,6 @@ env/
 Thumbs.db
 .vscode/settings.json
 *.swp
+
+# ─── Retired/dead code parked aside (not shipped) ─────────────────────────────
+junk/

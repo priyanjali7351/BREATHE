@@ -83,14 +83,19 @@ def _read_loop(port: str, baud: int = 9600) -> None:
     global _latest
     try:
         ser = serial.Serial(port, baud, timeout=3)
+        print(f"[gp2y10] opened {port} @ {baud} baud", flush=True)
         while True:
             raw_line = ser.readline().decode("utf-8", errors="ignore")
+            if raw_line.strip():
+                print(f"[gp2y10] raw: {raw_line.strip()!r}", flush=True)
             reading = parse_line(raw_line)
             if reading is not None:
                 _latest = reading
     except serial.SerialException as exc:
+        print(f"[gp2y10] SERIAL ERROR on {port}: {exc}", flush=True)
         _latest = {"pm25": None, "aqi": None, "raw": None, "error": str(exc)}
     except Exception as exc:
+        print(f"[gp2y10] UNEXPECTED on {port}: {exc}", flush=True)
         _latest = {"pm25": None, "aqi": None, "raw": None, "error": f"Unexpected: {exc}"}
 
 

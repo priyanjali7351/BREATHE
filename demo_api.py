@@ -48,6 +48,7 @@ FRONTEND_DIR = Path(__file__).parent / "frontend"
 _AQI_TTL = 300  # seconds
 _aqi_cache: dict[str, tuple[float, dict]] = {}
 _last_hr_log = None  # throttle the per-request HR debug log
+_last_sensor_log = None  # throttle the per-request sensor debug log
 
 
 def _city_aqi(city: str) -> dict:
@@ -88,6 +89,7 @@ def connect_hardware(watch: bool = False, sensor: bool = False,
         watch_hr.start(address=watch_addr)
         started["watch"] = True
     if sensor and sensor_port and not gp2y10.is_running():
+        print(f"[api] starting GP2Y10 reader on {sensor_port}", flush=True)
         gp2y10.start(sensor_port)
         started["sensor"] = sensor_port
     return {"started": started,
@@ -158,6 +160,12 @@ def live(
     temp_c = humidity = None
     if mode == "sensor":
         sensor_snap = gp2y10.get_reading()
+        global _last_sensor_log
+        if not sim:
+            _sk = (sensor_snap.get("pm25"), sensor_snap.get("error"))
+            if _sk != _last_sensor_log:
+                print(f"[api] sensor snapshot: {sensor_snap} running={gp2y10.is_running()}", flush=True)
+                _last_sensor_log = _sk
         if sim and sim_pm is not None:
             pm25, air_source = float(sim_pm), "sim"
         elif sensor_snap.get("pm25") is not None:
