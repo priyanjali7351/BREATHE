@@ -78,6 +78,29 @@ def hr_to_activity(hr: float | None) -> str:
     return "Athlete"
 
 
+def _forecast_aqi(row, current_aqi):
+    """Near-term AQI estimate for +6h/+24h. The trained hourly forecaster models
+    are gitignored/absent locally, so this is a damped-momentum estimate from the
+    live AQI trend the row carries (AQI_lag6h/lag24h). Labeled 'trend' so the UI
+    is honest; swap in the ML forecaster once its joblib is available."""
+    if row is None:
+        return None
+
+    def g(k, d):
+        try:
+            return float(row.get(k, d))
+        except Exception:
+            return d
+
+    cur = float(current_aqi)
+    lag6 = g("AQI_lag6h", cur)
+    slope6 = (cur - lag6) / 6.0          # AQI/hour over the last 6h
+    fc6 = cur + slope6 * 6.0             # continue the 6h trend
+    fc24 = cur + slope6 * 24.0 * 0.4     # damped extrapolation (trends decay)
+    clip = lambda v: int(round(max(0.0, min(500.0, v))))
+    return {"h6": clip(fc6), "h24": clip(fc24), "source": "trend"}
+
+
 # ── Hardware control ──────────────────────────────────────────────────────────
 
 @app.post("/api/hardware/connect")
@@ -122,6 +145,23 @@ def cities():
     return {"cities": sorted(realtime.CITY_COORDS.keys())}
 
 
+@app.get("/api/metrics")
+def metrics():
+    """Serve the trained-model metrics JSON files for the metrics page."""
+    import json as _json
+    models_dir = Path(__file__).resolve().parent / "models"
+    out = {}
+    for name in ["metrics", "nhanes_metrics", "phrs_calibration", "sanity_caps"]:
+        p = models_dir / f"{name}.json"
+        if p.exists():
+            try:
+                with open(p) as f:
+                    out[name] = _json.load(f)
+            except Exception as exc:
+                out[name] = {"error": str(exc)}
+    return out
+
+
 # ── The one endpoint the dashboard polls ──────────────────────────────────────
 
 @app.get("/api/live")
@@ -158,6 +198,7 @@ def live(
     # ── Air: city API (auto) or local dust sensor (sensor) ───────────────────
     pollutants: dict[str, float] = {}
     temp_c = humidity = None
+    row_for_fc = None
     if mode == "sensor":
         sensor_snap = gp2y10.get_reading()
         global _last_sensor_log
@@ -185,15 +226,26 @@ def live(
         temp_c = data.get("temp_c")
         humidity = data.get("humidity")
         air_source = "api_error" if data.get("error") else "city_api"
+        row_for_fc = data.get("row")
 
-    # ── Fuse into PHRS ───────────────────────────────────────────────────────
+    # ── Fuse into PHRS (resilient — model artifacts may be absent locally) ────
     profile = HealthProfile(age=age, condition=condition,
                             activity_level=activity, hours_outdoors=hours_outdoors)
-    phrs = compute_phrs(aqi=aqi, pollutants=pollutants, profile=profile,
-                        temp_c=temp_c, humidity=humidity, conditions=[condition])
-    category, color = phrs_category(phrs)
+    phrs_error = None
+    try:
+        phrs = compute_phrs(aqi=aqi, pollutants=pollutants, profile=profile,
+                            temp_c=temp_c, humidity=humidity, conditions=[condition])
+        category, color = phrs_category(phrs)
+    except Exception as exc:
+        phrs, category, color = None, "Model offline", "#7f918a"
+        phrs_error = f"{type(exc).__name__}"
+
+    # ── Near-term AQI forecast (+6h / +24h) ──────────────────────────────────
+    forecast = _forecast_aqi(row_for_fc, aqi) if mode != "sensor" else None
 
     return JSONResponse({
+        "forecast": forecast,
+        "phrs_error": phrs_error,
         "ts": time.time(),
         "mode": mode,
         "city": city,

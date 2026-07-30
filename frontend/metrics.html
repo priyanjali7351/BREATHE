@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BREATHE — Model Metrics</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    /* metrics-page specific — reuses the theme variables from style.css */
+    body { overflow-y: auto; }
+    .mstage { position: relative; z-index: 2; max-width: 1100px; margin: 0 auto; padding: 34px 40px 60px; }
+    .mhead { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+    .mhead h1 { font-family: var(--display); font-weight: 300; font-size: 26px; letter-spacing: .2em; text-transform: uppercase; }
+    .mhead .tag { color: var(--ink-dim); font-size: 10.5px; letter-spacing: .3em; text-transform: uppercase; }
+    .back { color: var(--ink-dim); text-decoration: none; font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase; border-bottom: 1px solid transparent; }
+    .back:hover { color: var(--accent); border-color: var(--accent); }
+    section.card { margin-top: 34px; }
+    section.card > h2 { font-family: var(--mono); font-size: 11px; letter-spacing: .28em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 4px; }
+    section.card > .sub { color: var(--ink-faint); font-size: 11px; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: 11px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+    th { color: var(--ink-faint); font-weight: 400; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; }
+    td:first-child, th:first-child { text-align: left; color: var(--ink); }
+    td.big { font-family: var(--display); font-size: 20px; color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+    .stat { border: 1px solid var(--line); border-radius: 4px; padding: 14px 16px; }
+    .stat .k { font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+    .stat .v { font-family: var(--display); font-size: 24px; margin-top: 6px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; word-break: break-word; }
+    .stat .v.txt { font-family: var(--mono); font-size: 11.5px; line-height: 1.4; color: var(--ink); }
+    section.card > .sub { color: var(--ink-faint); font-size: 10.5px; line-height: 1.4; margin-bottom: 16px; overflow-wrap: anywhere; }
+    .muted { color: var(--ink-dim); }
+    #err { color: var(--moderate); font-size: 12px; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="atmosphere"></div>
+  <div class="grain"></div>
+
+  <main class="mstage">
+    <header class="mhead">
+      <div><h1>Model Metrics</h1><div class="tag">BREATHE · trained-model performance</div></div>
+      <a class="back" href="index.html">← Dashboard</a>
+    </header>
+    <div id="content"><p class="muted" style="margin-top:34px">Loading metrics…</p></div>
+    <p id="err"></p>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const num = (v) => (typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(v < 1 && v > -1 ? 4 : 2)) : v);
+
+    // Render the AQI forecaster block as a horizon table
+    function forecasterTable(metrics) {
+      const rows = Object.entries(metrics).filter(([k]) => k.startsWith("aqi_"));
+      if (!rows.length) return "";
+      const body = rows.map(([, m]) => {
+        const pB = m.baseline_persistence || {};
+        return `<tr>
+          <td>+${m.horizon_hours ?? "?"} h</td>
+          <td class="big">${num(m.r2)}</td>
+          <td>${num(m.mae)}</td>
+          <td>${num(m.rmse)}</td>
+          <td class="muted">${pB.r2 != null ? num(pB.r2) : "—"}</td>
+        </tr>`;
+      }).join("");
+      return `<section class="card">
+        <h2>AQI Forecaster</h2>
+        <div class="sub">XGBoost · hourly horizons · test-set performance (higher R² = better; persistence = naive baseline)</div>
+        <table>
+          <thead><tr><th>Horizon</th><th>Test R²</th><th>MAE</th><th>RMSE</th><th>Persistence R²</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </section>`;
+    }
+
+    // Flatten an object's scalar leaves into a stat grid
+    function statGrid(title, sub, obj) {
+      const stats = [];
+      const walk = (o, prefix) => {
+        for (const [k, v] of Object.entries(o || {})) {
+          if (v !== null && typeof v === "object") walk(v, prefix ? `${prefix}·${k}` : k);
+          else stats.push([prefix ? `${prefix}·${k}` : k, v]);
+        }
+      };
+      walk(obj, "");
+      if (!stats.length) return "";
+      const cards = stats.slice(0, 24).map(([k, v]) => {
+        const isNum = typeof v === "number";
+        return `<div class="stat"><div class="k">${k.replace(/_/g, " ")}</div><div class="v${isNum ? "" : " txt"}">${num(v)}</div></div>`;
+      }).join("");
+      return `<section class="card"><h2>${title}</h2><div class="sub">${sub}</div><div class="grid">${cards}</div></section>`;
+    }
+
+    (async function () {
+      try {
+        const d = await (await fetch("/api/metrics")).json();
+        let html = "";
+        if (d.metrics) html += forecasterTable(d.metrics);
+        if (d.nhanes_metrics) html += statGrid("NHANES Susceptibility Classifier", "Personal-susceptibility model (age / sex / BMI / smoking → condition weight)", d.nhanes_metrics);
+        if (d.phrs_calibration) html += statGrid("PHRS Calibration", "Formula weights tuned against published Delhi / Varanasi risk data", d.phrs_calibration);
+        if (d.sanity_caps) html += statGrid("Forecast Sanity Caps", "Max plausible AQI change per horizon (guards against runaway predictions)", d.sanity_caps);
+        $("content").innerHTML = html || `<p class="muted" style="margin-top:34px">No metrics files found in models/.</p>`;
+      } catch (e) {
+        $("content").innerHTML = "";
+        $("err").textContent = "Could not load /api/metrics — is the server running?";
+      }
+    })();
+  </script>
+</body>
+</html>

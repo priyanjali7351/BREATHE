@@ -110,6 +110,29 @@ header {
 }
 .chip b { color: var(--ink); font-weight: 500; }
 
+/* Forecast strip */
+.forecast { margin-top: 6px; }
+.forecast .kicker { margin-bottom: 9px; }
+#fcSrc { color: var(--ink-faint); }
+.fc-row { display: flex; gap: 10px; }
+.panel.right .fc-row { justify-content: flex-end; }
+.fc {
+  border: 1px solid var(--line); border-radius: 4px; padding: 8px 13px;
+  display: flex; align-items: baseline; gap: 9px;
+  background: color-mix(in oklab, var(--glow) 5%, transparent);
+}
+.fc-h { font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--ink-dim); }
+.fc-v { font-family: var(--display); font-weight: 400; font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; }
+.fc-arrow { font-style: normal; color: var(--glow); font-size: 15px; }
+
+/* Metrics nav link (header) */
+.metrics-link {
+  color: var(--ink-dim); text-decoration: none; font-size: 10.5px;
+  letter-spacing: .18em; text-transform: uppercase; white-space: nowrap;
+  border-bottom: 1px solid transparent; transition: color .2s, border-color .2s;
+}
+.metrics-link:hover { color: var(--glow); border-color: var(--glow); }
+
 /* ECG sparkline */
 .ecg { width: 100%; height: 46px; opacity: .9; }
 .ecg path { fill: none; stroke: var(--glow); stroke-width: 1.6; filter: drop-shadow(0 0 6px var(--glow)); }

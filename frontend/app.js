@@ -71,12 +71,13 @@ function render(d) {
   particleColor = color;
 
   // Orb: fill ring by PHRS, number + category
-  setText("phrsVal", Math.round(d.phrs));
+  const phrsNum = d.phrs == null ? 0 : d.phrs;
+  setText("phrsVal", d.phrs == null ? "—" : Math.round(d.phrs));
   setText("phrsCat", d.category);
   const orbFill = $("orbFill");
   if (orbFill) {
     orbFill.style.stroke = color;
-    orbFill.style.strokeDashoffset = RING_LEN * (1 - Math.min(d.phrs, 100) / 100);
+    orbFill.style.strokeDashoffset = RING_LEN * (1 - Math.min(phrsNum, 100) / 100);
   }
 
   // Breathing period tracks HR (60/HR seconds); default calm 4s when no HR
@@ -95,6 +96,19 @@ function render(d) {
   }
   setHTML("pollChips", Object.entries(d.pollutants || {})
     .map(([k, v]) => `<span class="chip">${k} <b>${v}</b></span>`).join(""));
+
+  // AQI forecast (+6h / +24h)
+  const fc = d.forecast;
+  if (fc) {
+    const cur = d.aqi;
+    const arrow = (v) => (v > cur + 2 ? "↑" : v < cur - 2 ? "↓" : "→");
+    setText("fc6", fc.h6); setText("fc6a", arrow(fc.h6));
+    setText("fc24", fc.h24); setText("fc24a", arrow(fc.h24));
+    setText("fcSrc", fc.source === "ml" ? "· ML" : "· trend");
+  } else {
+    setText("fc6", "—"); setText("fc24", "—"); setText("fc6a", ""); setText("fc24a", "");
+    setText("fcSrc", d.mode === "sensor" ? "· local sensor (n/a)" : "· —");
+  }
 
   // Body panel
   setText("hrVal", d.hr ? Math.round(d.hr) : "—");
