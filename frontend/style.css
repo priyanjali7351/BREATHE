@@ -118,12 +118,14 @@ header {
 .panel.right .fc-row { justify-content: flex-end; }
 .fc {
   border: 1px solid var(--line); border-radius: 4px; padding: 8px 13px;
-  display: flex; align-items: baseline; gap: 9px;
+  display: flex; flex-direction: column; gap: 3px;
   background: color-mix(in oklab, var(--glow) 5%, transparent);
 }
+.fc-line { display: flex; align-items: baseline; gap: 9px; }
 .fc-h { font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--ink-dim); }
 .fc-v { font-family: var(--display); font-weight: 400; font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; }
 .fc-arrow { font-style: normal; color: var(--glow); font-size: 15px; }
+.fc-phrs { font-size: 10px; color: var(--ink-dim); letter-spacing: .02em; }
 
 /* Metrics nav link (header) */
 .metrics-link {

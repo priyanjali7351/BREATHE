@@ -36,7 +36,11 @@ if _ML_PIPELINES.exists():
 import realtime
 import gp2y10
 import watch_hr
-from generate_profiles import compute_phrs, HealthProfile, phrs_category
+from generate_profiles import (
+    compute_phrs, compute_phrs_horizons, condition_weight_for,
+    HealthProfile, phrs_category,
+)
+from models import predict_aqi_smooth
 
 app = FastAPI(title="BREATHE Live Demo", version="1.0")
 
@@ -78,14 +82,10 @@ def hr_to_activity(hr: float | None) -> str:
     return "Athlete"
 
 
-def _forecast_aqi(row, current_aqi):
-    """Near-term AQI estimate for +6h/+24h. The trained hourly forecaster models
-    are gitignored/absent locally, so this is a damped-momentum estimate from the
-    live AQI trend the row carries (AQI_lag6h/lag24h). Labeled 'trend' so the UI
-    is honest; swap in the ML forecaster once its joblib is available."""
-    if row is None:
-        return None
-
+def _trend_forecast(row, current_aqi):
+    """Fallback near-term AQI estimate — damped-momentum extrapolation of the
+    live AQI trend the row carries (AQI_lag6h). Only used if the trained
+    forecaster models can't be loaded/run for some reason."""
     def g(k, d):
         try:
             return float(row.get(k, d))
@@ -99,6 +99,26 @@ def _forecast_aqi(row, current_aqi):
     fc24 = cur + slope6 * 24.0 * 0.4     # damped extrapolation (trends decay)
     clip = lambda v: int(round(max(0.0, min(500.0, v))))
     return {"h6": clip(fc6), "h24": clip(fc24), "source": "trend"}
+
+
+def _forecast_aqi(row, current_aqi):
+    """Near-term AQI estimate for +6h/+24h, from the trained XGBoost AQI
+    forecaster models (models/aqi_forecaster_h6.joblib, _h24.joblib) fed with
+    the live feature row from realtime.py. Falls back to a trend
+    extrapolation only if the models/row aren't usable."""
+    if row is None:
+        return None
+
+    row_dict = row.to_dict() if hasattr(row, "to_dict") else row
+    cur = float(current_aqi)
+    try:
+        fc6 = predict_aqi_smooth(row_dict, cur, 6)
+        fc24 = predict_aqi_smooth(row_dict, cur, 24)
+        clip = lambda v: int(round(max(0.0, min(500.0, v))))
+        return {"h6": clip(fc6), "h24": clip(fc24), "source": "ml"}
+    except Exception as exc:
+        print(f"[api] AQI forecaster unavailable ({type(exc).__name__}: {exc}), falling back to trend", flush=True)
+        return _trend_forecast(row, current_aqi)
 
 
 # ── Hardware control ──────────────────────────────────────────────────────────
@@ -228,20 +248,36 @@ def live(
         air_source = "api_error" if data.get("error") else "city_api"
         row_for_fc = data.get("row")
 
-    # ── Fuse into PHRS (resilient — model artifacts may be absent locally) ────
+    # ── Near-term AQI forecast (+6h / +24h) — real trained forecaster ────────
+    forecast = _forecast_aqi(row_for_fc, aqi) if mode != "sensor" else None
+
+    # ── Fuse into PHRS: NHANES-derived condition weight (condition_weight_for,
+    # used inside compute_phrs_horizons) applied to now AND to the forecasted
+    # +6h/+24h AQI, so "future PHRS" reflects the ML forecaster's predicted
+    # AQI, not just the current reading ──────────────────────────────────────
     profile = HealthProfile(age=age, condition=condition,
                             activity_level=activity, hours_outdoors=hours_outdoors)
     phrs_error = None
+    phrs_forecast = None
     try:
-        phrs = compute_phrs(aqi=aqi, pollutants=pollutants, profile=profile,
-                            temp_c=temp_c, humidity=humidity, conditions=[condition])
-        category, color = phrs_category(phrs)
+        if forecast is not None:
+            aqi_by_h = {"now": aqi, "+6h": float(forecast["h6"]), "+24h": float(forecast["h24"])}
+            # Future pollutant composition isn't forecast — reuse the current
+            # mix (only the AQI level itself is projected forward).
+            poll_by_h = {"now": pollutants, "+6h": pollutants, "+24h": pollutants}
+            result = compute_phrs_horizons(aqi_by_h, poll_by_h, profile,
+                                           conditions=[condition],
+                                           temp_c=temp_c, humidity=humidity)
+            now_h = result["horizons"]["now"]
+            phrs, category, color = now_h["phrs"], now_h["band"], now_h["color"]
+            phrs_forecast = {"h6": result["horizons"]["+6h"], "h24": result["horizons"]["+24h"]}
+        else:
+            phrs = compute_phrs(aqi=aqi, pollutants=pollutants, profile=profile,
+                                temp_c=temp_c, humidity=humidity, conditions=[condition])
+            category, color = phrs_category(phrs)
     except Exception as exc:
         phrs, category, color = None, "Model offline", "#7f918a"
         phrs_error = f"{type(exc).__name__}"
-
-    # ── Near-term AQI forecast (+6h / +24h) ──────────────────────────────────
-    forecast = _forecast_aqi(row_for_fc, aqi) if mode != "sensor" else None
 
     return JSONResponse({
         "forecast": forecast,
@@ -262,6 +298,7 @@ def live(
         "phrs": phrs,
         "category": category,
         "color": color,
+        "phrs_forecast": phrs_forecast,
         "profile": {"age": age, "condition": condition},
         "hardware": {"watch": watch_hr.is_running(), "sensor": gp2y10.is_running()},
     }, headers={"Cache-Control": "no-store, max-age=0"})

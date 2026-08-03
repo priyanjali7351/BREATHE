@@ -105,9 +105,13 @@ function render(d) {
     setText("fc6", fc.h6); setText("fc6a", arrow(fc.h6));
     setText("fc24", fc.h24); setText("fc24a", arrow(fc.h24));
     setText("fcSrc", fc.source === "ml" ? "· ML" : "· trend");
+    const pf = d.phrs_forecast;
+    setText("fc6phrs", pf ? `risk ${Math.round(pf.h6.phrs)} · ${pf.h6.band}` : "");
+    setText("fc24phrs", pf ? `risk ${Math.round(pf.h24.phrs)} · ${pf.h24.band}` : "");
   } else {
     setText("fc6", "—"); setText("fc24", "—"); setText("fc6a", ""); setText("fc24a", "");
     setText("fcSrc", d.mode === "sensor" ? "· local sensor (n/a)" : "· —");
+    setText("fc6phrs", ""); setText("fc24phrs", "");
   }
 
   // Body panel
